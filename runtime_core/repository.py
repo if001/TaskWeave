@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import asdict, dataclass
+from pathlib import Path
 from time import time
-from typing import Literal, Protocol
+from typing import Literal, Protocol, TypedDict, cast
 
 from runtime_core.errors import TaskNotFoundError
 from runtime_core.models import Task, TaskStatus
@@ -38,6 +40,33 @@ class TaskTransition:
     reason: str | None = None
 
 
+class _TaskSerialized(TypedDict):
+    id: str
+    kind: str
+    payload: dict[str, object]
+    status: str
+    run_after: float | None
+    parent_task_id: str | None
+    dedupe_key: str | None
+    metadata: dict[str, object]
+
+
+class _TransitionSerialized(TypedDict):
+    task_id: str
+    from_status: str
+    to_status: str
+    timestamp_unix: float
+    reason: str | None
+
+
+class _RepositoryState(TypedDict):
+    tasks: dict[str, _TaskSerialized]
+    order: list[str]
+    attempts: dict[str, int]
+    task_id_by_dedupe_key: dict[str, str]
+    transitions: list[_TransitionSerialized]
+
+
 class TaskRepository(Protocol):
     def enqueue(self, task: Task) -> None: ...
 
@@ -54,7 +83,7 @@ class TaskRepository(Protocol):
     def get(self, task_id: str) -> Task | None: ...
 
 
-class InMemoryTaskRepository:
+class _TaskRepositoryBase(TaskRepository):
     def __init__(
         self,
         transition_policy: TransitionPolicy | None = None,
@@ -78,6 +107,7 @@ class InMemoryTaskRepository:
         self._attempts[task.id] = 0
         if task.dedupe_key:
             self._task_id_by_dedupe_key[task.dedupe_key] = task.id
+        self._persist()
 
     def enqueue_many(self, tasks: list[Task]) -> None:
         for task in tasks:
@@ -95,8 +125,8 @@ class InMemoryTaskRepository:
     def mark_status(self, task_id: str, to_status: str, reason: str | None = None) -> None:
         task = self._require_task(task_id)
         from_status = task.status
-        self._transition_policy.validate(from_status, to_status)
-        task.status = to_status
+        self._transition_policy.validate(from_status, cast(TaskStatus, to_status))
+        task.status = cast(TaskStatus, to_status)
         self.transitions.append(
             TaskTransition(
                 task_id=task_id,
@@ -106,14 +136,17 @@ class InMemoryTaskRepository:
                 reason=reason,
             )
         )
+        self._persist()
 
     def increment_attempt(self, task_id: str) -> int:
         self._require_task(task_id)
         self._attempts[task_id] += 1
+        self._persist()
         return self._attempts[task_id]
 
     def set_run_after(self, task_id: str, run_after: float | None) -> None:
         self._require_task(task_id).run_after = run_after
+        self._persist()
 
     def get(self, task_id: str) -> Task | None:
         return self._tasks.get(task_id)
@@ -142,5 +175,75 @@ class InMemoryTaskRepository:
             existing = self._task_id_by_dedupe_key[task.dedupe_key]
             raise ValueError(f"Dedupe key already exists: {task.dedupe_key} (task_id={existing})")
 
-        # drop は新規 enqueue しない方針（同一依頼を既存 task に集約）
         return False
+
+    def _persist(self) -> None:
+        """Hook point for repositories that need durable persistence."""
+
+
+class InMemoryTaskRepository(_TaskRepositoryBase):
+    pass
+
+
+class FileTaskRepository(_TaskRepositoryBase):
+    def __init__(
+        self,
+        file_path: str | Path,
+        transition_policy: TransitionPolicy | None = None,
+        dedupe_policy: DedupePolicy = "raise",
+    ) -> None:
+        self._file_path = Path(file_path)
+        super().__init__(transition_policy=transition_policy, dedupe_policy=dedupe_policy)
+        self._load()
+        self._persist()
+
+    def _persist(self) -> None:
+        self._file_path.parent.mkdir(parents=True, exist_ok=True)
+        self._file_path.write_text(
+            json.dumps(self._serialize_state(), ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+
+    def _load(self) -> None:
+        if not self._file_path.exists():
+            return
+
+        state = cast(_RepositoryState, json.loads(self._file_path.read_text(encoding="utf-8")))
+        self._tasks = {
+            task_id: Task(
+                id=task_data["id"],
+                kind=task_data["kind"],
+                payload=dict(task_data["payload"]),
+                status=cast(TaskStatus, task_data["status"]),
+                run_after=task_data["run_after"],
+                parent_task_id=task_data["parent_task_id"],
+                dedupe_key=task_data["dedupe_key"],
+                metadata=dict(task_data["metadata"]),
+            )
+            for task_id, task_data in state["tasks"].items()
+        }
+        self._order = list(state["order"])
+        self._attempts = dict(state["attempts"])
+        self._task_id_by_dedupe_key = dict(state["task_id_by_dedupe_key"])
+        self.transitions = [
+            TaskTransition(
+                task_id=transition["task_id"],
+                from_status=transition["from_status"],
+                to_status=transition["to_status"],
+                timestamp_unix=transition["timestamp_unix"],
+                reason=transition["reason"],
+            )
+            for transition in state["transitions"]
+        ]
+
+    def _serialize_state(self) -> _RepositoryState:
+        return {
+            "tasks": {
+                task_id: cast(_TaskSerialized, asdict(task))
+                for task_id, task in self._tasks.items()
+            },
+            "order": list(self._order),
+            "attempts": dict(self._attempts),
+            "task_id_by_dedupe_key": dict(self._task_id_by_dedupe_key),
+            "transitions": [cast(_TransitionSerialized, asdict(transition)) for transition in self.transitions],
+        }
