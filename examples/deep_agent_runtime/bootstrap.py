@@ -9,14 +9,24 @@ from runtime_core.registry import HandlerRegistry
 from runtime_core.repository import InMemoryTaskRepository
 from runtime_core.runtime import Runtime
 from runtime_langchain.runnable_handler import RunnableTaskHandler
-from examples.deep_agent_runtime.common import normalize_text
+
 from examples.deep_agent_runtime.main_agent_runnables import (
+    AgentConfig,
+    AgentRequest,
+    DelayedWorkerPlan,
     MainAgentRawResult,
     MainAgentRunnable,
-    DelayedWorkerPlan,
     PeriodicWorkerPlan,
     WorkerLaunchRecorder,
     build_main_agent_runnable,
+)
+from examples.deep_agent_runtime.notifications import (
+    NoopNotificationSender,
+    NotificationPayload,
+    NotificationSender,
+    NotificationTaskHandler,
+    extract_notification_metadata,
+    render_output_message,
 )
 from examples.deep_agent_runtime.worker_agent_runnables import (
     WorkerAgentRunnable,
@@ -26,6 +36,7 @@ from examples.deep_agent_runtime.worker_agent_runnables import (
 
 TASK_KIND_MAIN_RESEARCH = "main_research"
 TASK_KIND_WORKER_RESEARCH = "worker_research"
+TASK_KIND_NOTIFICATION = "notification"
 EXAMPLE_TASK_ID = "example:main:1"
 DEFAULT_MODEL_NAME = "gpt-4o-mini"
 _REAL_AGENT_ENV = "EXAMPLE_USE_REAL_DEEP_AGENT"
@@ -36,13 +47,14 @@ _BACKEND_DEEPAGENT = "deepagent"
 _PERIODIC_MIN_INTERVAL_SECONDS = 1.0
 _DEEPAGENT_ARTIFACT_DIR_ENV = "EXAMPLE_DEEPAGENT_ARTIFACT_DIR"
 
+
 @dataclass(slots=True)
 class ExampleRuntimeBundle:
     runtime: Runtime
     repository: InMemoryTaskRepository
 
 
-def build_example_runtime() -> ExampleRuntimeBundle:
+def build_example_runtime(notification_sender: NotificationSender | None = None) -> ExampleRuntimeBundle:
     repository = InMemoryTaskRepository()
     registry = HandlerRegistry()
 
@@ -64,6 +76,10 @@ def build_example_runtime() -> ExampleRuntimeBundle:
             config_mapper=_build_agent_config,
             output_mapper=_build_worker_task_result,
         ),
+    )
+    registry.register(
+        TASK_KIND_NOTIFICATION,
+        NotificationTaskHandler(sender=notification_sender or NoopNotificationSender()),
     )
 
     return ExampleRuntimeBundle(runtime=Runtime(repository=repository, registry=registry), repository=repository)
@@ -143,27 +159,23 @@ def _build_agent_config(ctx: TaskContext) -> AgentConfig:
 def _build_main_task_result(ctx: TaskContext, raw: object) -> TaskResult:
     main_raw = _to_main_raw_result(raw)
     base_time = _resolve_enqueued_at(ctx)
+    metadata = extract_notification_metadata(ctx.task.metadata)
+    metadata["discord_request_task_id"] = ctx.task.id
 
     immediate_tasks = [
-        _new_worker_task(
-            task_id=f"worker:{ctx.task.id}:now:{index}",
-            parent_task_id=ctx.task.id,
-            query=query,
-            run_after=None,
-        )
+        _new_worker_task(f"worker:{ctx.task.id}:now:{index}", ctx.task.id, query, None, metadata)
         for index, query in enumerate(main_raw["immediate_queries"], start=1)
     ]
-
     delayed_tasks = [
         _new_worker_task(
-            task_id=f"worker:{ctx.task.id}:delayed:{index}",
-            parent_task_id=ctx.task.id,
-            query=plan["query"],
-            run_after=base_time + plan["delay_seconds"],
+            f"worker:{ctx.task.id}:delayed:{index}",
+            ctx.task.id,
+            plan["query"],
+            base_time + plan["delay_seconds"],
+            metadata,
         )
         for index, plan in enumerate(main_raw["delayed_queries"], start=1)
     ]
-
     periodic_tasks = [
         _new_periodic_worker_task(
             task_id=f"worker:{ctx.task.id}:periodic:{index}:1",
@@ -174,22 +186,46 @@ def _build_main_task_result(ctx: TaskContext, raw: object) -> TaskResult:
             remaining_runs=plan["repeat_count"],
             interval_seconds=plan["interval_seconds"],
             run_after=base_time + plan["start_in_seconds"],
+            metadata=metadata,
         )
         for index, plan in enumerate(main_raw["periodic_queries"], start=1)
+    ]
+    notifications = [
+        _new_notification_task(
+            task_id=f"notification:{ctx.task.id}:main",
+            parent_task_id=ctx.task.id,
+            message=f"main result: {render_output_message(main_raw['agent_output'])}",
+            metadata=metadata,
+            notification_kind="main_result",
+        )
     ]
 
     return TaskResult(
         status="succeeded",
         output={"agent_output": main_raw["agent_output"]},
-        next_tasks=[*immediate_tasks, *delayed_tasks, *periodic_tasks],
+        next_tasks=[*immediate_tasks, *delayed_tasks, *periodic_tasks, *notifications],
     )
 
 
 def _build_worker_task_result(ctx: TaskContext, raw: object) -> TaskResult:
     remaining_runs = _to_int(ctx.task.payload.get("remaining_runs"), default=1)
     interval_seconds = _to_float(ctx.task.payload.get("periodic_interval_seconds"), default=0.0)
+    metadata = extract_notification_metadata(ctx.task.metadata)
+    request_task_id = str(ctx.task.metadata.get("discord_request_task_id", ctx.task.parent_task_id or ctx.task.id))
+    metadata["discord_request_task_id"] = request_task_id
+
+    notifications = [
+        _new_notification_task(
+            task_id=f"notification:{ctx.task.id}:worker_done",
+            parent_task_id=ctx.task.parent_task_id,
+            message=f"worker finished ({ctx.task.id}): {render_output_message(raw)}",
+            metadata=metadata,
+            notification_kind="worker_result",
+        )
+    ]
+
     if remaining_runs <= 1 or interval_seconds <= 0.0:
-        return TaskResult(status="succeeded", output={"worker_output": raw})
+        return TaskResult(status="succeeded", output={"worker_output": raw}, next_tasks=notifications)
 
     root_id = str(ctx.task.payload.get("periodic_root_id", ctx.task.id))
     iteration = _to_int(ctx.task.payload.get("periodic_iteration"), default=1)
@@ -202,8 +238,9 @@ def _build_worker_task_result(ctx: TaskContext, raw: object) -> TaskResult:
         remaining_runs=remaining_runs - 1,
         interval_seconds=interval_seconds,
         run_after=(ctx.task.run_after or 0.0) + interval_seconds,
+        metadata=metadata,
     )
-    return TaskResult(status="succeeded", output={"worker_output": raw}, next_tasks=[next_task])
+    return TaskResult(status="succeeded", output={"worker_output": raw}, next_tasks=[next_task, *notifications])
 
 
 def _new_worker_task(
@@ -211,6 +248,7 @@ def _new_worker_task(
     parent_task_id: str | None,
     query: str,
     run_after: float | None,
+    metadata: NotificationPayload,
 ) -> Task:
     return Task(
         id=task_id,
@@ -218,6 +256,7 @@ def _new_worker_task(
         payload={"query": query},
         parent_task_id=parent_task_id,
         run_after=run_after,
+        metadata=dict(metadata),
     )
 
 
@@ -230,12 +269,14 @@ def _new_periodic_worker_task(
     remaining_runs: int,
     interval_seconds: float,
     run_after: float,
+    metadata: NotificationPayload,
 ) -> Task:
     task = _new_worker_task(
         task_id=task_id,
         parent_task_id=parent_task_id,
         query=query,
         run_after=run_after,
+        metadata=metadata,
     )
     task.payload.update(
         {
@@ -248,14 +289,25 @@ def _new_periodic_worker_task(
     return task
 
 
+def _new_notification_task(
+    task_id: str,
+    parent_task_id: str | None,
+    message: str,
+    metadata: NotificationPayload,
+    notification_kind: str,
+) -> Task:
+    payload: NotificationPayload = {"message": message, "notification_kind": notification_kind, **metadata}
+    return Task(
+        id=task_id,
+        kind=TASK_KIND_NOTIFICATION,
+        payload=dict(payload),
+        parent_task_id=parent_task_id,
+    )
+
+
 def _to_main_raw_result(raw: object) -> MainAgentRawResult:
     if not isinstance(raw, dict):
-        return MainAgentRawResult(
-            agent_output=raw,
-            immediate_queries=[],
-            delayed_queries=[],
-            periodic_queries=[],
-        )
+        return MainAgentRawResult(agent_output=raw, immediate_queries=[], delayed_queries=[], periodic_queries=[])
 
     return MainAgentRawResult(
         agent_output=raw.get("agent_output", raw),
@@ -265,12 +317,6 @@ def _to_main_raw_result(raw: object) -> MainAgentRawResult:
     )
 
 
-def _to_agent_request(inp: AgentRequest | str) -> AgentRequest:
-    if isinstance(inp, dict):
-        return inp
-    return {"messages": [{"role": "user", "content": inp}]}
-
-
 def _resolve_enqueued_at(ctx: TaskContext) -> float:
     return _to_float(ctx.task.metadata.get("enqueued_at_unix"), default=0.0)
 
@@ -278,13 +324,13 @@ def _resolve_enqueued_at(ctx: TaskContext) -> float:
 def _to_query_list(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
-    return [query for query in (normalize_text(item) for item in value) if query]
+    return [str(item).strip() for item in value if str(item).strip()]
 
 
 def _to_delayed_plans(value: object) -> list[DelayedWorkerPlan]:
     plans: list[DelayedWorkerPlan] = []
     for item in _iter_dict_items(value):
-        query = normalize_text(item.get("query", ""))
+        query = str(item.get("query", "")).strip()
         if not query:
             continue
         plans.append(DelayedWorkerPlan(query=query, delay_seconds=max(_to_float(item.get("delay_seconds"), 0.0), 0.0)))
@@ -294,7 +340,7 @@ def _to_delayed_plans(value: object) -> list[DelayedWorkerPlan]:
 def _to_periodic_plans(value: object) -> list[PeriodicWorkerPlan]:
     plans: list[PeriodicWorkerPlan] = []
     for item in _iter_dict_items(value):
-        query = normalize_text(item.get("query", ""))
+        query = str(item.get("query", "")).strip()
         if not query:
             continue
         plans.append(
