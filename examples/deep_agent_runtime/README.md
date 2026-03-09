@@ -16,6 +16,18 @@ main agent が必要時に tool 経由で worker task をキュー投入し、ru
 python -m examples.deep_agent_runtime.main
 ```
 
+
+実 Deep Agent 実行時のバックエンド切り替え:
+
+- `EXAMPLE_USE_REAL_DEEP_AGENT=1` で実 LLM 実行を有効化
+- `EXAMPLE_REAL_AGENT_BACKEND=langchain` (default) で worker に `create_agent` を使用
+- `EXAMPLE_REAL_AGENT_BACKEND=deepagent` で worker に `create_deep_agent` を使用
+- `SIMPLE_CLIENT_BASE_URL=<URL>` を設定すると、deepagent worker に web検索ツール (`web_list`, `web_page`) が有効化されます
+- deepagent worker は `CompositeBackend` を使い、`/memories/` を `StoreBackend`（long-term memory）、`/artifacts/` を `FilesystemBackend`（ローカル保存）へ route します
+- Web検索アーティファクト保存先は `EXAMPLE_DEEPAGENT_ARTIFACT_DIR`（未指定時は一時ディレクトリ配下）です
+- `web_list` は `POST <base_url>/list` (`{"q": q, "k": k}`)、`web_page` は `POST <base_url>/page` (`{"url": url}`) を利用します
+- deepagent worker の検索/取得生レスポンスは `/artifacts/*` として保存され（実体は `EXAMPLE_DEEPAGENT_ARTIFACT_DIR` 配下）、会話コンテキストへは要約のみ返します（web_tools単体利用時は `EXAMPLE_WEB_SEARCH_DIR` を参照）
+
 実行後はターミナル対話モードに入り、1ユーザーとの継続会話として各ターンの main/worker 実行結果を表示します。
 
 ## worker 起動フロー

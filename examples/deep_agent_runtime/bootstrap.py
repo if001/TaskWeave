@@ -1,14 +1,28 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
-from typing import Protocol, TypedDict
+from dataclasses import dataclass
+from typing import TypedDict
 
 from runtime_core.models import Task, TaskContext, TaskResult
 from runtime_core.registry import HandlerRegistry
 from runtime_core.repository import InMemoryTaskRepository
 from runtime_core.runtime import Runtime
 from runtime_langchain.runnable_handler import RunnableTaskHandler
+from examples.deep_agent_runtime.common import normalize_text
+from examples.deep_agent_runtime.main_agent_runnables import (
+    MainAgentRawResult,
+    MainAgentRunnable,
+    DelayedWorkerPlan,
+    PeriodicWorkerPlan,
+    WorkerLaunchRecorder,
+    build_main_agent_runnable,
+)
+from examples.deep_agent_runtime.worker_agent_runnables import (
+    WorkerAgentRunnable,
+    build_worker_agent_runnable,
+    resolve_deepagent_artifact_dir,
+)
 
 TASK_KIND_MAIN_RESEARCH = "main_research"
 TASK_KIND_WORKER_RESEARCH = "worker_research"
@@ -16,38 +30,11 @@ EXAMPLE_TASK_ID = "example:main:1"
 DEFAULT_MODEL_NAME = "gpt-4o-mini"
 _REAL_AGENT_ENV = "EXAMPLE_USE_REAL_DEEP_AGENT"
 _MODEL_ENV = "EXAMPLE_MODEL"
+_BACKEND_ENV = "EXAMPLE_REAL_AGENT_BACKEND"
+_BACKEND_LANGCHAIN = "langchain"
+_BACKEND_DEEPAGENT = "deepagent"
 _PERIODIC_MIN_INTERVAL_SECONDS = 1.0
-
-AgentRequest = dict[str, object]
-AgentConfig = dict[str, str | int]
-
-
-class DelayedWorkerPlan(TypedDict):
-    query: str
-    delay_seconds: float
-
-
-class PeriodicWorkerPlan(TypedDict):
-    query: str
-    start_in_seconds: float
-    interval_seconds: float
-    repeat_count: int
-
-
-class MainAgentRawResult(TypedDict):
-    agent_output: object
-    immediate_queries: list[str]
-    delayed_queries: list[DelayedWorkerPlan]
-    periodic_queries: list[PeriodicWorkerPlan]
-
-
-class MainAgentRunnable(Protocol):
-    async def ainvoke(self, inp: AgentRequest | str, config: AgentConfig | None = None) -> MainAgentRawResult: ...
-
-
-class WorkerAgentRunnable(Protocol):
-    async def ainvoke(self, inp: AgentRequest | str, config: AgentConfig | None = None) -> object: ...
-
+_DEEPAGENT_ARTIFACT_DIR_ENV = "EXAMPLE_DEEPAGENT_ARTIFACT_DIR"
 
 @dataclass(slots=True)
 class ExampleRuntimeBundle:
@@ -55,167 +42,11 @@ class ExampleRuntimeBundle:
     repository: InMemoryTaskRepository
 
 
-@dataclass(slots=True)
-class _WorkerLaunchRecorder:
-    immediate_queries: list[str] = field(default_factory=list)
-    delayed_queries: list[DelayedWorkerPlan] = field(default_factory=list)
-    periodic_queries: list[PeriodicWorkerPlan] = field(default_factory=list)
-
-    def request_worker_now(self, query: str) -> str:
-        normalized_query = _normalize_query(query)
-        if normalized_query:
-            self.immediate_queries.append(normalized_query)
-        return f"queued-worker-now:{normalized_query}"
-
-    def request_worker_at(self, query: str, delay_seconds: float) -> str:
-        normalized_query = _normalize_query(query)
-        if normalized_query:
-            self.delayed_queries.append(
-                DelayedWorkerPlan(query=normalized_query, delay_seconds=max(delay_seconds, 0.0))
-            )
-        return f"queued-worker-at:{normalized_query}:{delay_seconds}"
-
-    def request_worker_periodic(
-        self,
-        query: str,
-        start_in_seconds: float,
-        interval_seconds: float,
-        repeat_count: int,
-    ) -> str:
-        normalized_query = _normalize_query(query)
-        if normalized_query:
-            self.periodic_queries.append(
-                PeriodicWorkerPlan(
-                    query=normalized_query,
-                    start_in_seconds=max(start_in_seconds, 0.0),
-                    interval_seconds=max(interval_seconds, _PERIODIC_MIN_INTERVAL_SECONDS),
-                    repeat_count=max(repeat_count, 1),
-                )
-            )
-        return f"queued-worker-periodic:{normalized_query}:{interval_seconds}"
-
-    def drain(self) -> MainAgentRawResult:
-        drained = MainAgentRawResult(
-            agent_output={"message": "worker requests collected"},
-            immediate_queries=list(self.immediate_queries),
-            delayed_queries=list(self.delayed_queries),
-            periodic_queries=list(self.periodic_queries),
-        )
-        self.immediate_queries.clear()
-        self.delayed_queries.clear()
-        self.periodic_queries.clear()
-        return drained
-
-
-class _MainRunnableBase(MainAgentRunnable):
-    def __init__(self, recorder: _WorkerLaunchRecorder) -> None:
-        self._recorder = recorder
-
-    def _collect_requests(self, request: AgentRequest) -> MainAgentRawResult:
-        topic = str(request.get("topic", ""))
-        needs_worker = bool(request.get("needs_worker", False))
-        if needs_worker:
-            self._recorder.request_worker_now(topic)
-
-        for delayed in _to_delayed_plans(request.get("delayed_jobs", [])):
-            self._recorder.request_worker_at(delayed["query"], delayed["delay_seconds"])
-
-        for periodic in _to_periodic_plans(request.get("periodic_jobs", [])):
-            self._recorder.request_worker_periodic(
-                periodic["query"],
-                periodic["start_in_seconds"],
-                periodic["interval_seconds"],
-                periodic["repeat_count"],
-            )
-
-        drained = self._recorder.drain()
-        drained["agent_output"] = {
-            "final_output": f"[mock main-agent] accepted: {topic}",
-            "needs_worker": needs_worker,
-            "delayed_count": len(drained["delayed_queries"]),
-            "periodic_count": len(drained["periodic_queries"]),
-        }
-        return drained
-
-
-class _EchoMainAgentRunnable(_MainRunnableBase):
-    async def ainvoke(self, inp: AgentRequest | str, config: AgentConfig | None = None) -> MainAgentRawResult:
-        _ = config
-        return self._collect_requests(_to_agent_request(inp))
-
-
-class _LangChainMainAgentRunnable(_MainRunnableBase):
-    def __init__(self, model_name: str, recorder: _WorkerLaunchRecorder) -> None:
-        super().__init__(recorder)
-        from langchain.agents import create_agent
-        from langchain.tools import tool
-        from langchain_openai import ChatOpenAI
-
-        @tool("request_worker_now")
-        def request_worker_now(query: str) -> str:
-            """Request immediate background deep research."""
-            return self._recorder.request_worker_now(query)
-
-        @tool("request_worker_at")
-        def request_worker_at(query: str, delay_seconds: float) -> str:
-            """Request one-time deep research after delay seconds."""
-            return self._recorder.request_worker_at(query, delay_seconds)
-
-        @tool("request_worker_periodic")
-        def request_worker_periodic(query: str, start_in_seconds: float, interval_seconds: float, repeat_count: int) -> str:
-            """Request periodic deep research with start delay, interval, and repeat count."""
-            return self._recorder.request_worker_periodic(query, start_in_seconds, interval_seconds, repeat_count)
-
-        self._agent = create_agent(
-            model=ChatOpenAI(model=model_name),
-            tools=[request_worker_now, request_worker_at, request_worker_periodic],
-            system_prompt=(
-                "You are a main research agent. "
-                "Use worker tools for heavy deep-research tasks: immediate, delayed one-time, or periodic."
-            ),
-        )
-
-    async def ainvoke(self, inp: AgentRequest | str, config: AgentConfig | None = None) -> MainAgentRawResult:
-        self._recorder.drain()
-        raw = await self._agent.ainvoke(_to_agent_request(inp), config=config)
-        drained = self._recorder.drain()
-        drained["agent_output"] = raw
-        return drained
-
-
-class _WorkerRunnableBase(WorkerAgentRunnable):
-    @staticmethod
-    def _query(inp: AgentRequest | str) -> str:
-        request = _to_agent_request(inp)
-        return str(request.get("query", ""))
-
-
-class _EchoWorkerAgentRunnable(_WorkerRunnableBase):
-    async def ainvoke(self, inp: AgentRequest | str, config: AgentConfig | None = None) -> object:
-        _ = config
-        return {"final_output": f"[mock worker-agent] deep researched: {self._query(inp)}"}
-
-
-class _LangChainWorkerAgentRunnable(_WorkerRunnableBase):
-    def __init__(self, model_name: str) -> None:
-        from langchain.agents import create_agent
-        from langchain_openai import ChatOpenAI
-
-        self._agent = create_agent(
-            model=ChatOpenAI(model=model_name),
-            tools=[],
-            system_prompt="You are a concise worker agent specialized in heavy deep research.",
-        )
-
-    async def ainvoke(self, inp: AgentRequest | str, config: AgentConfig | None = None) -> object:
-        return await self._agent.ainvoke(_to_agent_request(inp), config=config)
-
-
 def build_example_runtime() -> ExampleRuntimeBundle:
     repository = InMemoryTaskRepository()
     registry = HandlerRegistry()
 
-    worker_recorder = _WorkerLaunchRecorder()
+    worker_recorder = WorkerLaunchRecorder()
     registry.register(
         TASK_KIND_MAIN_RESEARCH,
         RunnableTaskHandler(
@@ -249,20 +80,32 @@ def seed_example_task(repository: InMemoryTaskRepository, topic: str, needs_work
     return task
 
 
-def _build_main_agent_runnable(recorder: _WorkerLaunchRecorder) -> MainAgentRunnable:
-    if _is_real_agent_enabled():
-        return _LangChainMainAgentRunnable(model_name=os.getenv(_MODEL_ENV, DEFAULT_MODEL_NAME), recorder=recorder)
-    return _EchoMainAgentRunnable(recorder=recorder)
+def _build_main_agent_runnable(recorder: WorkerLaunchRecorder) -> MainAgentRunnable:
+    return build_main_agent_runnable(
+        use_real_agent=_is_real_agent_enabled(),
+        model_name=os.getenv(_MODEL_ENV, DEFAULT_MODEL_NAME),
+        recorder=recorder,
+    )
 
 
 def _build_worker_agent_runnable() -> WorkerAgentRunnable:
-    if _is_real_agent_enabled():
-        return _LangChainWorkerAgentRunnable(model_name=os.getenv(_MODEL_ENV, DEFAULT_MODEL_NAME))
-    return _EchoWorkerAgentRunnable()
+    return build_worker_agent_runnable(
+        use_real_agent=_is_real_agent_enabled(),
+        backend=_resolve_real_agent_backend(),
+        model_name=os.getenv(_MODEL_ENV, DEFAULT_MODEL_NAME),
+        artifact_dir=resolve_deepagent_artifact_dir(_DEEPAGENT_ARTIFACT_DIR_ENV),
+    )
 
 
 def _is_real_agent_enabled() -> bool:
     return os.getenv(_REAL_AGENT_ENV, "0") == "1"
+
+
+def _resolve_real_agent_backend() -> str:
+    selected = os.getenv(_BACKEND_ENV, _BACKEND_LANGCHAIN).strip().lower()
+    if selected == _BACKEND_DEEPAGENT:
+        return _BACKEND_DEEPAGENT
+    return _BACKEND_LANGCHAIN
 
 
 def _build_main_agent_input(ctx: TaskContext) -> AgentRequest:
@@ -432,20 +275,16 @@ def _resolve_enqueued_at(ctx: TaskContext) -> float:
     return _to_float(ctx.task.metadata.get("enqueued_at_unix"), default=0.0)
 
 
-def _normalize_query(value: object) -> str:
-    return str(value).strip()
-
-
 def _to_query_list(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
-    return [query for query in (_normalize_query(item) for item in value) if query]
+    return [query for query in (normalize_text(item) for item in value) if query]
 
 
 def _to_delayed_plans(value: object) -> list[DelayedWorkerPlan]:
     plans: list[DelayedWorkerPlan] = []
     for item in _iter_dict_items(value):
-        query = _normalize_query(item.get("query", ""))
+        query = normalize_text(item.get("query", ""))
         if not query:
             continue
         plans.append(DelayedWorkerPlan(query=query, delay_seconds=max(_to_float(item.get("delay_seconds"), 0.0), 0.0)))
@@ -455,7 +294,7 @@ def _to_delayed_plans(value: object) -> list[DelayedWorkerPlan]:
 def _to_periodic_plans(value: object) -> list[PeriodicWorkerPlan]:
     plans: list[PeriodicWorkerPlan] = []
     for item in _iter_dict_items(value):
-        query = _normalize_query(item.get("query", ""))
+        query = normalize_text(item.get("query", ""))
         if not query:
             continue
         plans.append(
