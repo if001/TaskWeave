@@ -1,7 +1,7 @@
 import asyncio
 import unittest
 
-from app.bootstrap import build_runtime
+from runtime_core.testing.runtime_flow_app import build_runtime
 from runtime_core.models import Task, TaskContext, TaskResult
 from runtime_core.registry import HandlerRegistry
 from runtime_core.repository import InMemoryTaskRepository, TransitionPolicy
