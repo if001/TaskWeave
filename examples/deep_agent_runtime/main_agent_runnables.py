@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Protocol, TypedDict
+from dotenv import load_dotenv
 
 from examples.deep_agent_runtime.common import normalize_text
+from examples.deep_agent_runtime.ollama_client import get_ollama_client
 
 AgentRequest = dict[str, object]
 AgentConfig = dict[str, str | int]
+load_dotenv()
 
 
 class DelayedWorkerPlan(TypedDict):
@@ -29,7 +32,9 @@ class MainAgentRawResult(TypedDict):
 
 
 class MainAgentRunnable(Protocol):
-    async def ainvoke(self, inp: AgentRequest | str, config: AgentConfig | None = None) -> MainAgentRawResult: ...
+    async def ainvoke(
+        self, inp: AgentRequest | str, config: AgentConfig | None = None
+    ) -> MainAgentRawResult: ...
 
 
 @dataclass(slots=True)
@@ -47,10 +52,20 @@ class WorkerLaunchRecorder:
     def request_worker_at(self, query: str, delay_seconds: float) -> str:
         normalized_query = normalize_text(query)
         if normalized_query:
-            self.delayed_queries.append(DelayedWorkerPlan(query=normalized_query, delay_seconds=max(delay_seconds, 0.0)))
+            self.delayed_queries.append(
+                DelayedWorkerPlan(
+                    query=normalized_query, delay_seconds=max(delay_seconds, 0.0)
+                )
+            )
         return f"queued-worker-at:{normalized_query}:{delay_seconds}"
 
-    def request_worker_periodic(self, query: str, start_in_seconds: float, interval_seconds: float, repeat_count: int) -> str:
+    def request_worker_periodic(
+        self,
+        query: str,
+        start_in_seconds: float,
+        interval_seconds: float,
+        repeat_count: int,
+    ) -> str:
         normalized_query = normalize_text(query)
         if normalized_query:
             self.periodic_queries.append(
@@ -108,7 +123,9 @@ class _MainRunnableBase(MainAgentRunnable):
 
 
 class EchoMainAgentRunnable(_MainRunnableBase):
-    async def ainvoke(self, inp: AgentRequest | str, config: AgentConfig | None = None) -> MainAgentRawResult:
+    async def ainvoke(
+        self, inp: AgentRequest | str, config: AgentConfig | None = None
+    ) -> MainAgentRawResult:
         _ = config
         return self._collect_requests(_to_agent_request(inp))
 
@@ -118,7 +135,7 @@ class LangChainMainAgentRunnable(_MainRunnableBase):
         super().__init__(recorder)
         from langchain.agents import create_agent
         from langchain.tools import tool
-        from langchain_openai import ChatOpenAI
+        from langchain_core.tools import tool
 
         @tool("request_worker_now")
         def request_worker_now(query: str) -> str:
@@ -129,11 +146,19 @@ class LangChainMainAgentRunnable(_MainRunnableBase):
             return self._recorder.request_worker_at(query, delay_seconds)
 
         @tool("request_worker_periodic")
-        def request_worker_periodic(query: str, start_in_seconds: float, interval_seconds: float, repeat_count: int) -> str:
-            return self._recorder.request_worker_periodic(query, start_in_seconds, interval_seconds, repeat_count)
+        def request_worker_periodic(
+            query: str,
+            start_in_seconds: float,
+            interval_seconds: float,
+            repeat_count: int,
+        ) -> str:
+            return self._recorder.request_worker_periodic(
+                query, start_in_seconds, interval_seconds, repeat_count
+            )
 
+        model = get_ollama_client(model_name)
         self._agent = create_agent(
-            model=ChatOpenAI(model=model_name),
+            model=model,
             tools=[request_worker_now, request_worker_at, request_worker_periodic],
             system_prompt=(
                 "You are a main research agent. "
@@ -141,7 +166,9 @@ class LangChainMainAgentRunnable(_MainRunnableBase):
             ),
         )
 
-    async def ainvoke(self, inp: AgentRequest | str, config: AgentConfig | None = None) -> MainAgentRawResult:
+    async def ainvoke(
+        self, inp: AgentRequest | str, config: AgentConfig | None = None
+    ) -> MainAgentRawResult:
         self._recorder.drain()
         raw = await self._agent.ainvoke(_to_agent_request(inp), config=config)
         drained = self._recorder.drain()
@@ -149,7 +176,9 @@ class LangChainMainAgentRunnable(_MainRunnableBase):
         return drained
 
 
-def build_main_agent_runnable(use_real_agent: bool, model_name: str, recorder: WorkerLaunchRecorder) -> MainAgentRunnable:
+def build_main_agent_runnable(
+    use_real_agent: bool, model_name: str, recorder: WorkerLaunchRecorder
+) -> MainAgentRunnable:
     if use_real_agent:
         return LangChainMainAgentRunnable(model_name=model_name, recorder=recorder)
     return EchoMainAgentRunnable(recorder=recorder)
@@ -171,7 +200,12 @@ def _to_delayed_plans(value: object) -> list[DelayedWorkerPlan]:
         query = normalize_text(item.get("query", ""))
         if not query:
             continue
-        plans.append(DelayedWorkerPlan(query=query, delay_seconds=max(_to_float(item.get("delay_seconds"), 0.0), 0.0)))
+        plans.append(
+            DelayedWorkerPlan(
+                query=query,
+                delay_seconds=max(_to_float(item.get("delay_seconds"), 0.0), 0.0),
+            )
+        )
     return plans
 
 
@@ -189,7 +223,9 @@ def _to_periodic_plans(value: object) -> list[PeriodicWorkerPlan]:
             PeriodicWorkerPlan(
                 query=query,
                 start_in_seconds=max(_to_float(item.get("start_in_seconds"), 0.0), 0.0),
-                interval_seconds=max(_to_float(item.get("interval_seconds"), 60.0), 1.0),
+                interval_seconds=max(
+                    _to_float(item.get("interval_seconds"), 60.0), 1.0
+                ),
                 repeat_count=max(_to_int(item.get("repeat_count"), 1), 1),
             )
         )

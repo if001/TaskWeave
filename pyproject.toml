@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "python-dotenv>=1.2.2",
+]
 
 
 [project.optional-dependencies]
@@ -13,4 +15,17 @@ examples = [
     "langchain>=1.2.0",
     "langchain-openai>=0.2.0",
     "langgraph>=0.2.0",
+    "discord-py>=2.6.4",
+    "langchain-ollama>=1.0.1",
 ]
+
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/runtime_core", "src/runtime_langchain"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
