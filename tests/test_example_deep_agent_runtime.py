@@ -1,10 +1,68 @@
 import asyncio
+import json
+import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from runtime_core.models import Task
 
-from examples.deep_agent_runtime.bootstrap import EXAMPLE_TASK_ID, TASK_KIND_MAIN_RESEARCH, build_example_runtime, seed_example_task
+from examples.deep_agent_runtime.bootstrap import (
+    EXAMPLE_TASK_ID,
+    TASK_KIND_MAIN_RESEARCH,
+    _resolve_real_agent_backend,
+    build_example_runtime,
+    seed_example_task,
+)
+from examples.deep_agent_runtime.web_tools import web_list_and_store_artifact, web_page_and_store_artifact
 from examples.deep_agent_runtime.main import _build_worker_plan, _should_launch_worker
+
+
+class _SearchHandler(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:  # noqa: N802
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length).decode("utf-8")
+        payload = json.loads(body) if body else {}
+
+        if self.path == "/list":
+            response = {
+                "query": payload.get("q", ""),
+                "k": payload.get("k", 0),
+                "results": [
+                    {
+                        "rank": 1,
+                        "title": "sample",
+                        "url": "https://example.com",
+                        "snippet": "snippet",
+                        "published_date": None,
+                    }
+                ],
+            }
+        elif self.path == "/page":
+            response = {
+                "docs": [
+                    {
+                        "url": payload.get("url", ""),
+                        "title": "Example page",
+                        "markdown": "# heading\nbody",
+                    }
+                ]
+            }
+        else:
+            self.send_response(404)
+            self.end_headers()
+            return
+
+        raw = json.dumps(response).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def log_message(self, format: str, *args: object) -> None:
+        _ = (format, args)
 
 
 class DeepAgentRuntimeExampleTests(unittest.TestCase):
@@ -118,6 +176,78 @@ class DeepAgentRuntimeExampleTests(unittest.TestCase):
         self.assertTrue(bool(plan["needs_worker"]))
         self.assertEqual(len(plan["delayed_jobs"]), 1)
         self.assertEqual(len(plan["periodic_jobs"]), 1)
+
+    def test_web_tools_store_artifact_files(self) -> None:
+        import os
+
+        with TemporaryDirectory() as temp_dir:
+            original_dir = os.environ.get("EXAMPLE_WEB_SEARCH_DIR")
+            os.environ["EXAMPLE_WEB_SEARCH_DIR"] = temp_dir
+            server = ThreadingHTTPServer(("127.0.0.1", 0), _SearchHandler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                base_url = f"http://127.0.0.1:{server.server_address[1]}"
+
+                list_result = web_list_and_store_artifact(query="llm agents", k=3, base_url=base_url)
+                self.assertEqual(list_result["status"], "ok")
+                list_artifact = Path(list_result["artifact_path"])
+                self.assertTrue(list_artifact.exists())
+                list_stored = json.loads(list_artifact.read_text(encoding="utf-8"))
+                self.assertEqual(list_stored["kind"], "web_list")
+                self.assertEqual(list_stored["request"]["q"], "llm agents")
+                self.assertIn("results", list_stored["response"])
+
+                page_result = web_page_and_store_artifact(url="https://example.com", base_url=base_url)
+                self.assertEqual(page_result["status"], "ok")
+                page_artifact = Path(page_result["artifact_path"])
+                self.assertTrue(page_artifact.exists())
+                page_stored = json.loads(page_artifact.read_text(encoding="utf-8"))
+                self.assertEqual(page_stored["kind"], "web_page")
+                self.assertEqual(page_stored["request"]["url"], "https://example.com")
+                self.assertIn("docs", page_stored["response"])
+
+                writes: list[str] = []
+
+                def _writer(payload_text: str) -> str:
+                    writes.append(payload_text)
+                    return "/artifacts/custom_artifact.json"
+
+                custom_result = web_list_and_store_artifact(
+                    query="custom writer",
+                    k=2,
+                    base_url=base_url,
+                    artifact_writer=_writer,
+                )
+                self.assertEqual(custom_result["status"], "ok")
+                self.assertEqual(custom_result["artifact_path"], "/artifacts/custom_artifact.json")
+                self.assertEqual(len(writes), 1)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=1)
+                if original_dir is None:
+                    os.environ.pop("EXAMPLE_WEB_SEARCH_DIR", None)
+                else:
+                    os.environ["EXAMPLE_WEB_SEARCH_DIR"] = original_dir
+
+
+
+    def test_real_agent_backend_resolution(self) -> None:
+        import os
+
+        original = os.environ.get("EXAMPLE_REAL_AGENT_BACKEND")
+        try:
+            os.environ["EXAMPLE_REAL_AGENT_BACKEND"] = "deepagent"
+            self.assertEqual(_resolve_real_agent_backend(), "deepagent")
+
+            os.environ["EXAMPLE_REAL_AGENT_BACKEND"] = "unknown"
+            self.assertEqual(_resolve_real_agent_backend(), "langchain")
+        finally:
+            if original is None:
+                os.environ.pop("EXAMPLE_REAL_AGENT_BACKEND", None)
+            else:
+                os.environ["EXAMPLE_REAL_AGENT_BACKEND"] = original
 
 
 if __name__ == "__main__":
