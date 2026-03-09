@@ -52,3 +52,25 @@ python -m examples.deep_agent_runtime.main
 - `later` を含む入力で遅延1回 worker（10秒後）が追加されます。
 - `daily` または `periodic` を含む入力で periodic worker（5秒後開始・60秒間隔・3回）が追加されます。
 - `exit` / `quit` / `:q` で終了します。
+
+## Discord 入出力サンプル
+
+`examples/deep_agent_runtime/discord_bot.py` は Discord のメンション入力を `main_research` task として enqueue し、
+main agent の結果と worker 完了通知を Discord チャンネルへ返すサンプルです。
+
+### 使い方
+
+1. `discord.py` をインストール
+2. Discord Bot Token を環境変数に設定
+
+```bash
+export EXAMPLE_DISCORD_BOT_TOKEN="<your-token>"
+python -m examples.deep_agent_runtime.discord_bot
+```
+
+### 振る舞い
+
+- Bot をメンションすると `main_research` task が作成される
+- メンション受信から main 応答を返すまで、Bot は Discord 上で typing 表示を継続する
+- main 処理の完了時に `notification` task が生成され、main の結果が Discord に送信される
+- worker が起動した場合、worker 完了時にも `notification` task が生成され、完了メッセージが Discord に送信される
