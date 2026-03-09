@@ -6,14 +6,22 @@ import os
 from dataclasses import dataclass, field
 from time import time
 
+from dotenv import load_dotenv
 import discord
 
 from runtime_core.models import Task
 
-from examples.deep_agent_runtime.bootstrap import TASK_KIND_MAIN_RESEARCH, build_example_runtime
-from examples.deep_agent_runtime.notifications import NotificationPayload, NotificationSenderBase
+from examples.deep_agent_runtime.bootstrap import (
+    TASK_KIND_MAIN_RESEARCH,
+    build_example_runtime,
+)
+from examples.deep_agent_runtime.notifications import (
+    NotificationPayload,
+    NotificationSenderBase,
+)
 
-_DISCORD_TOKEN_ENV = "EXAMPLE_DISCORD_BOT_TOKEN"
+load_dotenv()
+_DISCORD_BOT_TOKEN = "DISCORD_BOT_TOKEN"
 _EXIT_NOTE = "Discord bot started. Mention this bot in a channel to create tasks."
 _IDLE_SLEEP_SECONDS = 0.5
 _TYPING_REFRESH_SECONDS = 8.0
@@ -46,7 +54,9 @@ class TypingTaskController:
 
 
 class DiscordNotificationSender(NotificationSenderBase):
-    def __init__(self, client: discord.Client, typing_controller: TypingTaskController) -> None:
+    def __init__(
+        self, client: discord.Client, typing_controller: TypingTaskController
+    ) -> None:
         self._client = client
         self._typing_controller = typing_controller
 
@@ -82,7 +92,12 @@ class MentionTaskBuilder:
         return Task(
             id=task_id,
             kind=TASK_KIND_MAIN_RESEARCH,
-            payload={"topic": self.build_topic(message), "needs_worker": True, "delayed_jobs": [], "periodic_jobs": []},
+            payload={
+                "topic": self.build_topic(message),
+                "needs_worker": True,
+                "delayed_jobs": [],
+                "periodic_jobs": [],
+            },
             metadata={
                 "enqueued_at_unix": time(),
                 "discord_channel_id": message.channel.id,
@@ -97,7 +112,9 @@ class TaskWeaveDiscordBridge:
         self._client = client
         self._typing_controller = TypingTaskController()
         self._bundle = build_example_runtime(
-            notification_sender=DiscordNotificationSender(client, typing_controller=self._typing_controller)
+            notification_sender=DiscordNotificationSender(
+                client, typing_controller=self._typing_controller
+            )
         )
         self._turn = 1
         self._runtime_worker: asyncio.Task[None] | None = None
@@ -134,9 +151,9 @@ class TaskWeaveDiscordBridge:
 
 
 def _require_token() -> str:
-    token = os.getenv(_DISCORD_TOKEN_ENV, "").strip()
+    token = os.getenv(_DISCORD_BOT_TOKEN, "").strip()
     if not token:
-        raise RuntimeError(f"Set {_DISCORD_TOKEN_ENV} before running this example.")
+        raise RuntimeError(f"Set token before running this example.")
     return token
 
 

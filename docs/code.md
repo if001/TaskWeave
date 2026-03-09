@@ -9,6 +9,16 @@
 - objectに関しても最終的なjsonやpayloadを示す型としては利用しても良いが、できる限りライブラリに存在する型を利用する。
 - Protcolsを継承しinterfaceを作成する。実装は、Protcolsを継承したクラスを更に継承する形で実装すること。
 
-
 ## logger
 - richパッケージとloggerを使いログを標準出力に表示
+
+## packages
+`uv sync --extra examples`
+
+## 実行
+`uv run -m examples.main`
+
+`uv run -m examples.discord_bot`
+
+## test
+`uv run pytest`

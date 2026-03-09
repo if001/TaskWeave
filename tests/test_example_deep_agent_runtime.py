@@ -15,8 +15,11 @@ from examples.deep_agent_runtime.bootstrap import (
     build_example_runtime,
     seed_example_task,
 )
-from examples.deep_agent_runtime.web_tools import web_list_and_store_artifact, web_page_and_store_artifact
-from examples.deep_agent_runtime.main import _build_worker_plan, _should_launch_worker
+from examples.deep_agent_runtime.web_tools import (
+    web_list_and_store_artifact,
+    web_page_and_store_artifact,
+)
+from examples.main import _build_worker_plan, _should_launch_worker
 
 
 class _SearchHandler(BaseHTTPRequestHandler):
@@ -66,7 +69,9 @@ class _SearchHandler(BaseHTTPRequestHandler):
 
 
 class DeepAgentRuntimeExampleTests(unittest.TestCase):
-    def test_example_runtime_completes_seeded_main_and_immediate_worker_tasks(self) -> None:
+    def test_example_runtime_completes_seeded_main_and_immediate_worker_tasks(
+        self,
+    ) -> None:
         bundle = build_example_runtime()
         seed_example_task(bundle.repository, topic="test topic", needs_worker=True)
 
@@ -111,7 +116,9 @@ class DeepAgentRuntimeExampleTests(unittest.TestCase):
 
         self.assertFalse(asyncio.run(bundle.runtime.tick(now_unix=109.0)))
         self.assertTrue(asyncio.run(bundle.runtime.tick(now_unix=110.0)))
-        self.assertEqual(bundle.repository.get("worker:main:delayed:1:delayed:1").status, "succeeded")
+        self.assertEqual(
+            bundle.repository.get("worker:main:delayed:1:delayed:1").status, "succeeded"
+        )
 
     def test_periodic_worker_is_reenqueued_until_repeat_count(self) -> None:
         bundle = build_example_runtime()
@@ -152,7 +159,10 @@ class DeepAgentRuntimeExampleTests(unittest.TestCase):
         self.assertEqual(third.run_after, 320.0)
 
         self.assertTrue(asyncio.run(bundle.runtime.tick(now_unix=320.0)))
-        self.assertEqual(bundle.repository.get("worker:main:periodic:1:periodic:1:3").status, "succeeded")
+        self.assertEqual(
+            bundle.repository.get("worker:main:periodic:1:periodic:1:3").status,
+            "succeeded",
+        )
 
     def test_example_runtime_skips_worker_when_not_needed(self) -> None:
         bundle = build_example_runtime()
@@ -189,7 +199,9 @@ class DeepAgentRuntimeExampleTests(unittest.TestCase):
             try:
                 base_url = f"http://127.0.0.1:{server.server_address[1]}"
 
-                list_result = web_list_and_store_artifact(query="llm agents", k=3, base_url=base_url)
+                list_result = web_list_and_store_artifact(
+                    query="llm agents", k=3, base_url=base_url
+                )
                 self.assertEqual(list_result["status"], "ok")
                 list_artifact = Path(list_result["artifact_path"])
                 self.assertTrue(list_artifact.exists())
@@ -198,7 +210,9 @@ class DeepAgentRuntimeExampleTests(unittest.TestCase):
                 self.assertEqual(list_stored["request"]["q"], "llm agents")
                 self.assertIn("results", list_stored["response"])
 
-                page_result = web_page_and_store_artifact(url="https://example.com", base_url=base_url)
+                page_result = web_page_and_store_artifact(
+                    url="https://example.com", base_url=base_url
+                )
                 self.assertEqual(page_result["status"], "ok")
                 page_artifact = Path(page_result["artifact_path"])
                 self.assertTrue(page_artifact.exists())
@@ -220,7 +234,9 @@ class DeepAgentRuntimeExampleTests(unittest.TestCase):
                     artifact_writer=_writer,
                 )
                 self.assertEqual(custom_result["status"], "ok")
-                self.assertEqual(custom_result["artifact_path"], "/artifacts/custom_artifact.json")
+                self.assertEqual(
+                    custom_result["artifact_path"], "/artifacts/custom_artifact.json"
+                )
                 self.assertEqual(len(writes), 1)
             finally:
                 server.shutdown()
@@ -230,8 +246,6 @@ class DeepAgentRuntimeExampleTests(unittest.TestCase):
                     os.environ.pop("EXAMPLE_WEB_SEARCH_DIR", None)
                 else:
                     os.environ["EXAMPLE_WEB_SEARCH_DIR"] = original_dir
-
-
 
     def test_real_agent_backend_resolution(self) -> None:
         import os
