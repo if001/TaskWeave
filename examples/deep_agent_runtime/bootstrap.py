@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import TypedDict
 
 from runtime_core.models import Task, TaskContext, TaskResult
 from runtime_core.registry import HandlerRegistry
-from runtime_core.repository import InMemoryTaskRepository
+from runtime_core.repository import (
+    FileTaskRepository,
+    InMemoryTaskRepository,
+    TaskRepository,
+)
 from runtime_core.runtime import Runtime
 from runtime_langchain.runnable_handler import RunnableTaskHandler
 
@@ -38,26 +41,26 @@ TASK_KIND_MAIN_RESEARCH = "main_research"
 TASK_KIND_WORKER_RESEARCH = "worker_research"
 TASK_KIND_NOTIFICATION = "notification"
 EXAMPLE_TASK_ID = "example:main:1"
-DEFAULT_MODEL_NAME = "gpt-4o-mini"
-_REAL_AGENT_ENV = "EXAMPLE_USE_REAL_DEEP_AGENT"
+DEFAULT_MODEL_NAME = "gpt-oss:20b"
+_REAL_AGENT_ENV = "USE_REAL_DEEP_AGENT"
 _MODEL_ENV = "MODEL_NAME"
-_BACKEND_ENV = "EXAMPLE_REAL_AGENT_BACKEND"
+_BACKEND_ENV = "REAL_AGENT_BACKEND"
 _BACKEND_LANGCHAIN = "langchain"
 _BACKEND_DEEPAGENT = "deepagent"
 _PERIODIC_MIN_INTERVAL_SECONDS = 1.0
-_DEEPAGENT_ARTIFACT_DIR_ENV = "EXAMPLE_DEEPAGENT_ARTIFACT_DIR"
+_DEEPAGENT_ARTIFACT_DIR_ENV = "DEEPAGENT_ARTIFACT_DIR"
 
 
 @dataclass(slots=True)
 class ExampleRuntimeBundle:
     runtime: Runtime
-    repository: InMemoryTaskRepository
+    repository: TaskRepository
 
 
 def build_example_runtime(
     notification_sender: NotificationSender | None = None,
 ) -> ExampleRuntimeBundle:
-    repository = InMemoryTaskRepository()
+    repository = FileTaskRepository("./.state")
     registry = HandlerRegistry()
 
     worker_recorder = WorkerLaunchRecorder()

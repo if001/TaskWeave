@@ -1,15 +1,28 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Protocol, TypedDict
+
+from typing import TYPE_CHECKING, Protocol, TypeAlias, TypedDict, cast, Any
 from dotenv import load_dotenv
+
+from langchain.agents.middleware import before_model, after_model, AgentState
+from langgraph.runtime import Runtime
 
 from examples.deep_agent_runtime.common import normalize_text
 from examples.deep_agent_runtime.ollama_client import get_ollama_client
+from runtime_core.logging_utils import get_logger
 
 AgentRequest = dict[str, object]
 AgentConfig = dict[str, str | int]
 load_dotenv()
+logger = get_logger(__name__)
+
+if TYPE_CHECKING:
+    from langchain_core.runnables import RunnableConfig as _RunnableConfig  # type: ignore[import-not-found]
+else:
+    _RunnableConfig = dict[str, object]
+
+LangChainConfig: TypeAlias = _RunnableConfig
 
 
 class DelayedWorkerPlan(TypedDict):
@@ -35,6 +48,12 @@ class MainAgentRunnable(Protocol):
     async def ainvoke(
         self, inp: AgentRequest | str, config: AgentConfig | None = None
     ) -> MainAgentRawResult: ...
+
+
+class _AgentExecutorLike(Protocol):
+    async def ainvoke(
+        self, inp: AgentRequest, config: LangChainConfig | None = None
+    ) -> object: ...
 
 
 @dataclass(slots=True)
@@ -134,15 +153,35 @@ class LangChainMainAgentRunnable(_MainRunnableBase):
     def __init__(self, model_name: str, recorder: WorkerLaunchRecorder) -> None:
         super().__init__(recorder)
         from langchain.agents import create_agent
-        from langchain.tools import tool
         from langchain_core.tools import tool
 
         @tool("request_worker_now")
         def request_worker_now(query: str) -> str:
+            """Queue an immediate deep-research worker task.
+
+            Use when the query needs background research right away.
+            Args:
+                query: Research topic or question to hand off to the worker.
+            Returns:
+                A status string indicating the request was queued.
+            Side effects:
+                Records the request in the worker launch recorder.
+            """
             return self._recorder.request_worker_now(query)
 
         @tool("request_worker_at")
         def request_worker_at(query: str, delay_seconds: float) -> str:
+            """Queue a one-time worker task after a delay (seconds).
+
+            Use when the work should start later (e.g., cooldown or scheduled check).
+            Args:
+                query: Research topic or question for the worker.
+                delay_seconds: Seconds from now to start the task (will be clamped to >= 0).
+            Returns:
+                A status string indicating the delayed request was queued.
+            Side effects:
+                Records the request in the worker launch recorder.
+            """
             return self._recorder.request_worker_at(query, delay_seconds)
 
         @tool("request_worker_periodic")
@@ -152,17 +191,40 @@ class LangChainMainAgentRunnable(_MainRunnableBase):
             interval_seconds: float,
             repeat_count: int,
         ) -> str:
+            """Queue a periodic worker task with a start delay and repeat interval.
+
+            Use for recurring research (e.g., monitoring a topic).
+            Args:
+                query: Research topic or question for the worker.
+                start_in_seconds: Seconds from now to the first run (clamped to >= 0).
+                interval_seconds: Seconds between runs (clamped to >= 1).
+                repeat_count: Number of runs (clamped to >= 1).
+            Returns:
+                A status string indicating the periodic request was queued.
+            Side effects:
+                Records the request in the worker launch recorder.
+            """
             return self._recorder.request_worker_periodic(
                 query, start_in_seconds, interval_seconds, repeat_count
             )
 
+        @before_model(can_jump_to=["end"])
+        def check_message(state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
+            m = state["messages"]
+            logger.info(f"last message {m[-1]}\n\n")
+            return None
+
         model = get_ollama_client(model_name)
-        self._agent = create_agent(
-            model=model,
-            tools=[request_worker_now, request_worker_at, request_worker_periodic],
-            system_prompt=(
-                "You are a main research agent. "
-                "Use worker tools for heavy deep-research tasks: immediate, delayed one-time, or periodic."
+        self._agent = cast(
+            _AgentExecutorLike,
+            create_agent(
+                model=model,
+                tools=[request_worker_now, request_worker_at, request_worker_periodic],
+                system_prompt=(
+                    "You are a main research agent. "
+                    "Use worker tools for heavy deep-research tasks: immediate, delayed one-time, or periodic."
+                ),
+                middleware=[check_message],
             ),
         )
 
@@ -170,7 +232,10 @@ class LangChainMainAgentRunnable(_MainRunnableBase):
         self, inp: AgentRequest | str, config: AgentConfig | None = None
     ) -> MainAgentRawResult:
         self._recorder.drain()
-        raw = await self._agent.ainvoke(_to_agent_request(inp), config=config)
+        raw = await self._agent.ainvoke(
+            _to_agent_request(inp),
+            config=cast(LangChainConfig, config),
+        )
         drained = self._recorder.drain()
         drained["agent_output"] = raw
         return drained

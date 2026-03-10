@@ -77,7 +77,9 @@ class TaskRepository(Protocol):
 
     def lease_next_ready(self, now_unix: float) -> Task | None: ...
 
-    def mark_status(self, task_id: str, to_status: str, reason: str | None = None) -> None: ...
+    def mark_status(
+        self, task_id: str, to_status: str, reason: str | None = None
+    ) -> None: ...
 
     def increment_attempt(self, task_id: str) -> int: ...
 
@@ -123,11 +125,13 @@ class _TaskRepositoryBase(TaskRepository):
             if not self._is_ready(task, now_unix):
                 continue
             self.mark_status(task.id, "leased")
-            logger.info("Task leased id=%s", task.id)
+            logger.debug("Task leased id=%s", task.id)
             return task
         return None
 
-    def mark_status(self, task_id: str, to_status: str, reason: str | None = None) -> None:
+    def mark_status(
+        self, task_id: str, to_status: str, reason: str | None = None
+    ) -> None:
         task = self._require_task(task_id)
         from_status = task.status
         self._transition_policy.validate(from_status, cast(TaskStatus, to_status))
@@ -148,13 +152,17 @@ class _TaskRepositoryBase(TaskRepository):
         self._require_task(task_id)
         self._attempts[task_id] += 1
         self._persist()
-        logger.info("Task attempt incremented id=%s attempt=%s", task_id, self._attempts[task_id])
+        logger.info(
+            "Task attempt incremented id=%s attempt=%s",
+            task_id,
+            self._attempts[task_id],
+        )
         return self._attempts[task_id]
 
     def set_run_after(self, task_id: str, run_after: float | None) -> None:
         self._require_task(task_id).run_after = run_after
         self._persist()
-        logger.info("Task run_after set id=%s run_after=%s", task_id, run_after)
+        logger.debug("Task run_after set id=%s run_after=%s", task_id, run_after)
 
     def get(self, task_id: str) -> Task | None:
         return self._tasks.get(task_id)
@@ -181,8 +189,12 @@ class _TaskRepositoryBase(TaskRepository):
 
         if self._dedupe_policy == "raise":
             existing = self._task_id_by_dedupe_key[task.dedupe_key]
-            logger.error("Dedupe key collision key=%s task_id=%s", task.dedupe_key, existing)
-            raise ValueError(f"Dedupe key already exists: {task.dedupe_key} (task_id={existing})")
+            logger.error(
+                "Dedupe key collision key=%s task_id=%s", task.dedupe_key, existing
+            )
+            raise ValueError(
+                f"Dedupe key already exists: {task.dedupe_key} (task_id={existing})"
+            )
 
         logger.warning("Task dropped due to dedupe key=%s", task.dedupe_key)
         return False
@@ -203,7 +215,9 @@ class FileTaskRepository(_TaskRepositoryBase):
         dedupe_policy: DedupePolicy = "raise",
     ) -> None:
         self._file_path = Path(file_path)
-        super().__init__(transition_policy=transition_policy, dedupe_policy=dedupe_policy)
+        super().__init__(
+            transition_policy=transition_policy, dedupe_policy=dedupe_policy
+        )
         self._load()
         self._persist()
         logger.info("FileTaskRepository initialized path=%s", self._file_path)
@@ -211,16 +225,22 @@ class FileTaskRepository(_TaskRepositoryBase):
     def _persist(self) -> None:
         self._file_path.parent.mkdir(parents=True, exist_ok=True)
         self._file_path.write_text(
-            json.dumps(self._serialize_state(), ensure_ascii=False, indent=2, sort_keys=True),
+            json.dumps(
+                self._serialize_state(), ensure_ascii=False, indent=2, sort_keys=True
+            ),
             encoding="utf-8",
         )
 
     def _load(self) -> None:
         if not self._file_path.exists():
-            logger.warning("Repository file does not exist yet path=%s", self._file_path)
+            logger.warning(
+                "Repository file does not exist yet path=%s", self._file_path
+            )
             return
 
-        state = cast(_RepositoryState, json.loads(self._file_path.read_text(encoding="utf-8")))
+        state = cast(
+            _RepositoryState, json.loads(self._file_path.read_text(encoding="utf-8"))
+        )
         self._tasks = {
             task_id: Task(
                 id=task_data["id"],
@@ -247,7 +267,11 @@ class FileTaskRepository(_TaskRepositoryBase):
             )
             for transition in state["transitions"]
         ]
-        logger.info("Repository state loaded tasks=%s transitions=%s", len(self._tasks), len(self.transitions))
+        logger.debug(
+            "Repository state loaded tasks=%s transitions=%s",
+            len(self._tasks),
+            len(self.transitions),
+        )
 
     def _serialize_state(self) -> _RepositoryState:
         return {
@@ -258,5 +282,8 @@ class FileTaskRepository(_TaskRepositoryBase):
             "order": list(self._order),
             "attempts": dict(self._attempts),
             "task_id_by_dedupe_key": dict(self._task_id_by_dedupe_key),
-            "transitions": [cast(_TransitionSerialized, asdict(transition)) for transition in self.transitions],
+            "transitions": [
+                cast(_TransitionSerialized, asdict(transition))
+                for transition in self.transitions
+            ],
         }

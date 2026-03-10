@@ -13,7 +13,7 @@ def get_logger(name: str) -> logging.Logger:
     logger.propagate = False
 
     try:
-        from rich.logging import RichHandler
+        from rich.logging import RichHandler  # type: ignore[import-not-found]
 
         handler: logging.Handler = RichHandler(
             markup=True,

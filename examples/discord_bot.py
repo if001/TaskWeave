@@ -146,7 +146,9 @@ class TaskWeaveDiscordBridge:
             logger.error("Client user is unavailable; mention ignored")
             return
         if not isinstance(message.channel, discord.TextChannel):
-            logger.warning("Non-text channel mention ignored: channel=%s", message.channel)
+            logger.warning(
+                "Non-text channel mention ignored: channel=%s", message.channel
+            )
             return
 
         builder = MentionTaskBuilder(bot_user_id=user.id)
@@ -171,7 +173,7 @@ def _require_token() -> str:
     token = os.getenv(_DISCORD_BOT_TOKEN, "").strip()
     if not token:
         logger.error("Environment variable %s is not set", _DISCORD_BOT_TOKEN)
-        raise RuntimeError(f"Set token before running this example.")
+        raise RuntimeError("Set token before running this example.")
     return token
 
 

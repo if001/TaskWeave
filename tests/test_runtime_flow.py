@@ -51,9 +51,15 @@ class RuntimeFlowTests(unittest.TestCase):
         asyncio.run(self._drain(runtime))
 
         self.assertEqual(notification_service.sent_messages, ["Background research done for: topic"])
-        self.assertEqual(repository.get("task:1").status, "succeeded")
-        self.assertEqual(repository.get("worker:task:1").status, "succeeded")
-        self.assertEqual(repository.get("notification:worker:task:1").status, "succeeded")
+        self.assertEqual(_require_task(repository.get("task:1"), "task:1").status, "succeeded")
+        self.assertEqual(_require_task(repository.get("worker:task:1"), "worker:task:1").status, "succeeded")
+        self.assertEqual(
+            _require_task(
+                repository.get("notification:worker:task:1"),
+                "notification:worker:task:1",
+            ).status,
+            "succeeded",
+        )
         self.assertEqual(
             artifact_service.read_text("worker_summary:worker:task:1"),
             "Background research done for: topic",
@@ -70,7 +76,7 @@ class RuntimeFlowTests(unittest.TestCase):
 
         first_tick = asyncio.run(runtime.tick(now_unix=100.0))
         self.assertTrue(first_tick)
-        task = repository.get("retry:1")
+        task = _require_task(repository.get("retry:1"), "retry:1")
         self.assertEqual(task.status, "queued")
         self.assertEqual(task.run_after, 101.0)
 
@@ -79,7 +85,7 @@ class RuntimeFlowTests(unittest.TestCase):
 
         second_tick = asyncio.run(runtime.tick(now_unix=101.0))
         self.assertTrue(second_tick)
-        self.assertEqual(repository.get("retry:1").status, "succeeded")
+        self.assertEqual(_require_task(repository.get("retry:1"), "retry:1").status, "succeeded")
 
     def test_scheduler_controls_retry_time(self) -> None:
         repository = InMemoryTaskRepository()
@@ -95,7 +101,10 @@ class RuntimeFlowTests(unittest.TestCase):
 
         asyncio.run(runtime.tick(now_unix=0.0))
 
-        self.assertEqual(repository.get("retry:scheduler").run_after, 123.0)
+        self.assertEqual(
+            _require_task(repository.get("retry:scheduler"), "retry:scheduler").run_after,
+            123.0,
+        )
 
     def test_periodic_rule_generates_tasks_without_duplicates(self) -> None:
         repository = InMemoryTaskRepository()
@@ -121,8 +130,14 @@ class RuntimeFlowTests(unittest.TestCase):
         self.assertTrue(first)
         self.assertFalse(second)
         self.assertTrue(third)
-        self.assertEqual(repository.get("periodic:ping:1").status, "succeeded")
-        self.assertEqual(repository.get("periodic:ping:2").status, "succeeded")
+        self.assertEqual(
+            _require_task(repository.get("periodic:ping:1"), "periodic:ping:1").status,
+            "succeeded",
+        )
+        self.assertEqual(
+            _require_task(repository.get("periodic:ping:2"), "periodic:ping:2").status,
+            "succeeded",
+        )
 
     def test_unknown_task_kind_fails_task(self) -> None:
         repository = InMemoryTaskRepository()
@@ -132,7 +147,7 @@ class RuntimeFlowTests(unittest.TestCase):
 
         processed = asyncio.run(runtime.tick(now_unix=10.0))
         self.assertTrue(processed)
-        self.assertEqual(repository.get("missing:1").status, "failed")
+        self.assertEqual(_require_task(repository.get("missing:1"), "missing:1").status, "failed")
 
     def test_transition_history_records_reason_on_retry(self) -> None:
         repository = InMemoryTaskRepository()
@@ -161,7 +176,7 @@ class RuntimeFlowTests(unittest.TestCase):
 
         processed = asyncio.run(runtime.tick(now_unix=1.0))
         self.assertTrue(processed)
-        self.assertEqual(repository.get("cancel:1").status, "cancelled")
+        self.assertEqual(_require_task(repository.get("cancel:1"), "cancel:1").status, "cancelled")
 
     def test_deadline_exceeded_marks_task_failed(self) -> None:
         runtime, repository, _, _ = build_runtime()
@@ -176,7 +191,7 @@ class RuntimeFlowTests(unittest.TestCase):
 
         processed = asyncio.run(runtime.tick(now_unix=10.0))
         self.assertTrue(processed)
-        self.assertEqual(repository.get("deadline:1").status, "failed")
+        self.assertEqual(_require_task(repository.get("deadline:1"), "deadline:1").status, "failed")
 
     def test_transition_policy_can_be_injected(self) -> None:
         repository = InMemoryTaskRepository(transition_policy=_RejectAllTransitions())
@@ -203,6 +218,12 @@ class RuntimeFlowTests(unittest.TestCase):
     async def _drain(self, runtime: Runtime) -> None:
         while await runtime.tick():
             pass
+
+
+def _require_task(task: Task | None, task_id: str) -> Task:
+    if task is None:
+        raise AssertionError(f"task not found: {task_id}")
+    return task
 
 
 if __name__ == "__main__":

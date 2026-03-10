@@ -20,13 +20,15 @@ class HandlerRegistry:
 
     def register(self, kind: str, handler: TaskHandler) -> None:
         self._handlers[kind] = handler
-        logger.info("Handler registered kind=%s", kind)
+        logger.debug("Handler registered kind=%s", kind)
 
     def resolve(self, kind: str) -> TaskHandler:
         try:
             handler = self._handlers[kind]
-            logger.info("Handler resolved kind=%s", kind)
+            logger.debug("Handler resolved kind=%s", kind)
             return handler
         except KeyError as exc:
             logger.error("Unknown task kind requested=%s", kind)
-            raise UnknownTaskKindError(f"No handler registered for task kind: {kind}") from exc
+            raise UnknownTaskKindError(
+                f"No handler registered for task kind: {kind}"
+            ) from exc

@@ -116,9 +116,10 @@ class DeepAgentRuntimeExampleTests(unittest.TestCase):
 
         self.assertFalse(asyncio.run(bundle.runtime.tick(now_unix=109.0)))
         self.assertTrue(asyncio.run(bundle.runtime.tick(now_unix=110.0)))
-        self.assertEqual(
-            bundle.repository.get("worker:main:delayed:1:delayed:1").status, "succeeded"
-        )
+        delayed_done = bundle.repository.get("worker:main:delayed:1:delayed:1")
+        self.assertIsNotNone(delayed_done)
+        assert delayed_done is not None
+        self.assertEqual(delayed_done.status, "succeeded")
 
     def test_periodic_worker_is_reenqueued_until_repeat_count(self) -> None:
         bundle = build_example_runtime()
@@ -159,10 +160,10 @@ class DeepAgentRuntimeExampleTests(unittest.TestCase):
         self.assertEqual(third.run_after, 320.0)
 
         self.assertTrue(asyncio.run(bundle.runtime.tick(now_unix=320.0)))
-        self.assertEqual(
-            bundle.repository.get("worker:main:periodic:1:periodic:1:3").status,
-            "succeeded",
-        )
+        final_periodic = bundle.repository.get("worker:main:periodic:1:periodic:1:3")
+        self.assertIsNotNone(final_periodic)
+        assert final_periodic is not None
+        self.assertEqual(final_periodic.status, "succeeded")
 
     def test_example_runtime_skips_worker_when_not_needed(self) -> None:
         bundle = build_example_runtime()

@@ -1,4 +1,0 @@
-.env
-.venv
-src/*.egg-info
-src/**/*.egg-info

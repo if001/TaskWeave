@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol, TypedDict
 
-from runtime_core.models import Task, TaskContext, TaskResult
+from runtime_core.models import TaskContext, TaskResult
 
 from examples.deep_agent_runtime.common import normalize_text
 

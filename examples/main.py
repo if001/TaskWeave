@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from time import time
+from typing import TypedDict
 
 from runtime_core.models import Task
 from runtime_core.repository import InMemoryTaskRepository
@@ -58,7 +59,13 @@ async def _run_until_idle(runtime: Runtime) -> None:
         pass
 
 
-def _build_worker_plan(user_text: str) -> dict[str, object]:
+class WorkerPlan(TypedDict):
+    needs_worker: bool
+    delayed_jobs: list[dict[str, object]]
+    periodic_jobs: list[dict[str, object]]
+
+
+def _build_worker_plan(user_text: str) -> WorkerPlan:
     needs_worker = _should_launch_worker(user_text)
     delayed_jobs: list[dict[str, object]] = []
     periodic_jobs: list[dict[str, object]] = []
@@ -76,11 +83,11 @@ def _build_worker_plan(user_text: str) -> dict[str, object]:
             }
         )
 
-    return {
-        "needs_worker": needs_worker,
-        "delayed_jobs": delayed_jobs,
-        "periodic_jobs": periodic_jobs,
-    }
+    return WorkerPlan(
+        needs_worker=needs_worker,
+        delayed_jobs=delayed_jobs,
+        periodic_jobs=periodic_jobs,
+    )
 
 
 def _should_launch_worker(user_text: str) -> bool:
