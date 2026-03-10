@@ -16,10 +16,7 @@ from examples.deep_agent_runtime.bootstrap import (
     TASK_KIND_MAIN_RESEARCH,
     build_example_runtime,
 )
-from examples.deep_agent_runtime.notifications import (
-    NotificationPayload,
-    NotificationSenderBase,
-)
+from runtime_core.notifications import NotificationPayload, NotificationSenderBase
 
 load_dotenv()
 _DISCORD_BOT_TOKEN = "DISCORD_BOT_TOKEN"

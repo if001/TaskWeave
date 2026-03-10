@@ -3,9 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol, TypedDict
 
-from runtime_core.models import TaskContext, TaskResult
+from typing import cast
 
-from examples.deep_agent_runtime.common import normalize_text
+from runtime_core.agent_types import MainAgentOutput, WorkerAgentOutput
+from runtime_core.models import TaskContext, TaskResult
 
 
 class NotificationPayload(TypedDict, total=False):
@@ -35,12 +36,16 @@ class NotificationTaskHandler:
     sender: NotificationSender
 
     async def run(self, ctx: TaskContext) -> TaskResult:
-        await self.sender.send(notification_payload_from_task_payload(ctx.task.payload))
+        await self.sender.send(
+            notification_payload_from_task_payload(
+                cast(NotificationPayload, ctx.task.payload)
+            )
+        )
         return TaskResult(status="succeeded")
 
 
-def notification_payload_from_task_payload(payload: dict[str, object]) -> NotificationPayload:
-    result: NotificationPayload = {"message": normalize_text(payload.get("message", ""))}
+def notification_payload_from_task_payload(payload: NotificationPayload) -> NotificationPayload:
+    result: NotificationPayload = {"message": _normalize_text(payload.get("message", ""))}
     _set_int_if_present(result, "discord_channel_id", payload.get("discord_channel_id"))
     _set_int_if_present(result, "discord_requester_id", payload.get("discord_requester_id"))
     _set_str_if_present(result, "discord_request_task_id", payload.get("discord_request_task_id"))
@@ -51,17 +56,25 @@ def notification_payload_from_task_payload(payload: dict[str, object]) -> Notifi
 def extract_notification_metadata(metadata: dict[str, object]) -> NotificationPayload:
     result: NotificationPayload = {}
     _set_int_if_present(result, "discord_channel_id", metadata.get("discord_channel_id"))
-    _set_int_if_present(result, "discord_requester_id", metadata.get("discord_requester_id"))
-    _set_str_if_present(result, "discord_request_task_id", metadata.get("discord_request_task_id"))
+    _set_int_if_present(
+        result, "discord_requester_id", metadata.get("discord_requester_id")
+    )
+    _set_str_if_present(
+        result, "discord_request_task_id", metadata.get("discord_request_task_id")
+    )
     return result
 
 
-def render_output_message(raw: object) -> str:
+def render_output_message(raw: MainAgentOutput | WorkerAgentOutput | str) -> str:
     if isinstance(raw, dict):
         final_output = raw.get("final_output")
         if final_output is not None:
-            return normalize_text(final_output)
-    return normalize_text(raw)
+            return _normalize_text(final_output)
+    return _normalize_text(raw)
+
+
+def _normalize_text(value: object) -> str:
+    return str(value).strip()
 
 
 def _set_int_if_present(payload: NotificationPayload, key: str, value: object) -> None:

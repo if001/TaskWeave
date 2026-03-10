@@ -5,7 +5,7 @@ from time import time
 from typing import TypedDict
 
 from runtime_core.models import Task
-from runtime_core.repository import InMemoryTaskRepository
+from runtime_core.repository import TaskRepository
 from runtime_core.runtime import Runtime
 
 from examples.deep_agent_runtime.bootstrap import TASK_KIND_MAIN_RESEARCH, build_example_runtime
@@ -95,7 +95,7 @@ def _should_launch_worker(user_text: str) -> bool:
     return any(keyword in normalized for keyword in _WORKER_TRIGGER_KEYWORDS)
 
 
-def _print_turn_result(repository: InMemoryTaskRepository, task_id: str) -> None:
+def _print_turn_result(repository: TaskRepository, task_id: str) -> None:
     main_task = _require_task(task=repository.get(task_id), task_id=task_id)
     print(f"agent> main_task status={main_task.status}")
 
