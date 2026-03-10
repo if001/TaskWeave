@@ -29,6 +29,13 @@ class Runtime:
         self._scheduler = scheduler or TaskScheduler()
         self._periodic_rules = periodic_rules or []
 
+    @property
+    def repository(self) -> TaskRepository:
+        return self._repository
+
+    def enqueue_periodic_tasks(self, now_unix: float) -> None:
+        self._enqueue_periodic_tasks(now_unix)
+
     async def tick(self, now_unix: float | None = None) -> bool:
         now = now_unix if now_unix is not None else time()
         self._enqueue_periodic_tasks(now)
@@ -39,23 +46,25 @@ class Runtime:
             return False
 
         logger.info("Leased task id=%s kind=%s", task.id, task.kind)
+        await self.execute_task(task, now_unix=now)
+        return True
 
-        if self._is_cancelled(task):
-            self._repository.mark_status(task.id, "cancelled", reason="cancellation requested")
-            logger.warning("Task cancelled before run id=%s", task.id)
-            return True
-
-        deadline = self._resolve_deadline(task)
-        if self._is_deadline_exceeded(deadline, now):
-            self._repository.mark_status(task.id, "failed", reason="deadline exceeded")
-            logger.error("Task deadline exceeded id=%s deadline=%s now=%s", task.id, deadline, now)
-            return True
+    async def execute_task(self, task: Task, now_unix: float | None = None) -> TaskResult:
+        now = now_unix if now_unix is not None else time()
+        deadline, early_result = self._prepare_execution(task, now)
+        if early_result is not None:
+            return early_result
 
         attempt = self._start_task(task)
-        result = await self._run_handler(task, attempt, deadline, now)
+        try:
+            result = await self._run_handler(task, attempt, deadline, now)
+        except asyncio.CancelledError:
+            self._repository.mark_status(task.id, "cancelled", reason="runner cancelled")
+            raise
+
         logger.info("Handler completed task id=%s status=%s", task.id, result.status)
         self._commit(task, result, now, attempt)
-        return True
+        return result
 
     def _enqueue_periodic_tasks(self, now_unix: float) -> None:
         if not self._periodic_rules:
@@ -66,6 +75,29 @@ class Runtime:
     def _start_task(self, task: Task) -> int:
         self._repository.mark_status(task.id, "running")
         return self._repository.increment_attempt(task.id)
+
+    def _prepare_execution(
+        self, task: Task, now_unix: float
+    ) -> tuple[float | None, TaskResult | None]:
+        if self._is_cancelled(task):
+            self._repository.mark_status(
+                task.id, "cancelled", reason="cancellation requested"
+            )
+            logger.warning("Task cancelled before run id=%s", task.id)
+            return None, TaskResult(status="failed", error="cancelled")
+
+        deadline = self._resolve_deadline(task)
+        if self._is_deadline_exceeded(deadline, now_unix):
+            self._repository.mark_status(task.id, "failed", reason="deadline exceeded")
+            logger.error(
+                "Task deadline exceeded id=%s deadline=%s now=%s",
+                task.id,
+                deadline,
+                now_unix,
+            )
+            return deadline, TaskResult(status="failed", error="deadline exceeded")
+
+        return deadline, None
 
     async def _run_handler(
         self,

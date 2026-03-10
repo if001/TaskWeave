@@ -77,6 +77,10 @@ class TaskRepository(Protocol):
 
     def lease_next_ready(self, now_unix: float) -> Task | None: ...
 
+    def lease_next_ready_by_kinds(
+        self, now_unix: float, kinds: list[str]
+    ) -> Task | None: ...
+
     def mark_status(
         self, task_id: str, to_status: str, reason: str | None = None
     ) -> None: ...
@@ -106,6 +110,7 @@ class _TaskRepositoryBase(TaskRepository):
         if not self._should_enqueue(task):
             return
         if task.id in self._tasks:
+            logger.error(f"Task already exists: {task.id}")
             raise ValueError(f"Task already exists: {task.id}")
         self._tasks[task.id] = task
         self._order.append(task.id)
@@ -120,14 +125,14 @@ class _TaskRepositoryBase(TaskRepository):
             self.enqueue(task)
 
     def lease_next_ready(self, now_unix: float) -> Task | None:
-        for task_id in self._order:
-            task = self._tasks[task_id]
-            if not self._is_ready(task, now_unix):
-                continue
-            self.mark_status(task.id, "leased")
-            logger.debug("Task leased id=%s", task.id)
-            return task
-        return None
+        return self._lease_next_ready(now_unix, None)
+
+    def lease_next_ready_by_kinds(
+        self, now_unix: float, kinds: list[str]
+    ) -> Task | None:
+        if not kinds:
+            return None
+        return self._lease_next_ready(now_unix, set(kinds))
 
     def mark_status(
         self, task_id: str, to_status: str, reason: str | None = None
@@ -186,7 +191,6 @@ class _TaskRepositoryBase(TaskRepository):
 
         if task.dedupe_key not in self._task_id_by_dedupe_key:
             return True
-
         if self._dedupe_policy == "raise":
             existing = self._task_id_by_dedupe_key[task.dedupe_key]
             logger.error(
@@ -198,6 +202,18 @@ class _TaskRepositoryBase(TaskRepository):
 
         logger.warning("Task dropped due to dedupe key=%s", task.dedupe_key)
         return False
+
+    def _lease_next_ready(self, now_unix: float, kinds: set[str] | None) -> Task | None:
+        for task_id in self._order:
+            task = self._tasks[task_id]
+            if kinds is not None and task.kind not in kinds:
+                continue
+            if not self._is_ready(task, now_unix):
+                continue
+            self.mark_status(task.id, "leased")
+            logger.debug("Task leased id=%s", task.id)
+            return task
+        return None
 
     def _persist(self) -> None:
         """Hook point for repositories that need durable persistence."""

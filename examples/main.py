@@ -6,9 +6,13 @@ from typing import TypedDict
 
 from runtime_core.models import Task
 from runtime_core.repository import TaskRepository
-from runtime_core.runtime import Runtime
+from runtime_core.runner import RunnerPolicy, RuntimeRunner
 
-from examples.deep_agent_runtime.bootstrap import TASK_KIND_MAIN_RESEARCH, build_example_runtime
+from examples.deep_agent_runtime.bootstrap import (
+    TASK_KIND_MAIN_RESEARCH,
+    TASK_KIND_WORKER_RESEARCH,
+    build_example_runtime,
+)
 
 _EXIT_COMMANDS = {"exit", "quit", ":q"}
 _WORKER_TRIGGER_KEYWORDS = ("research", "deep", "investigate", "調査", "深掘り")
@@ -17,6 +21,14 @@ _USER_ID = "terminal-user-1"
 
 async def run() -> None:
     bundle = build_example_runtime()
+    runner = RuntimeRunner(
+        runtime=bundle.runtime,
+        policy=RunnerPolicy(
+            max_concurrency=2,
+            main_kinds=[TASK_KIND_MAIN_RESEARCH],
+            worker_kinds=[TASK_KIND_WORKER_RESEARCH],
+        ),
+    )
     turn = 1
 
     print("Deep Agent Runtime Chat (type 'exit' to quit)")
@@ -45,7 +57,7 @@ async def run() -> None:
             )
         )
 
-        await _run_until_idle(bundle.runtime)
+        await _run_until_idle(runner)
         _print_turn_result(bundle.repository, task_id=task_id)
         turn += 1
 
@@ -54,8 +66,8 @@ def main() -> None:
     asyncio.run(run())
 
 
-async def _run_until_idle(runtime: Runtime) -> None:
-    while await runtime.tick():
+async def _run_until_idle(runner: RuntimeRunner) -> None:
+    while await runner.run_once():
         pass
 
 

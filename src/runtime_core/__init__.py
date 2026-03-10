@@ -19,14 +19,16 @@ from runtime_core.agent_types import (
     normalize_main_input,
     normalize_worker_input,
 )
-from runtime_core.research_flow import (
-    ResearchFlow,
-    ResearchFlowConfig,
+from runtime_core.task_flow import (
+    TaskFlowConfig,
     build_main_task_result,
     build_worker_task_result,
+    to_delayed_plans,
+    to_periodic_plans,
 )
 from runtime_core.repository import DedupePolicy, FileTaskRepository, InMemoryTaskRepository, TransitionPolicy
 from runtime_core.runtime import Runtime
+from runtime_core.runner import RunnerPolicy, RuntimeRunner
 from runtime_core.scheduler import PeriodicRule, RetryPolicy, TaskScheduler
 
 __all__ = [
@@ -43,6 +45,8 @@ __all__ = [
     "PeriodicRule",
     "TaskScheduler",
     "Runtime",
+    "RuntimeRunner",
+    "RunnerPolicy",
     "AgentConfig",
     "DelayedWorkerPlan",
     "MainAgentOutput",
@@ -58,8 +62,9 @@ __all__ = [
     "NotificationSenderBase",
     "NoopNotificationSender",
     "NotificationTaskHandler",
-    "ResearchFlowConfig",
-    "ResearchFlow",
+    "TaskFlowConfig",
     "build_main_task_result",
     "build_worker_task_result",
+    "to_delayed_plans",
+    "to_periodic_plans",
 ]

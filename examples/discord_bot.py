@@ -5,15 +5,18 @@ import contextlib
 import os
 from dataclasses import dataclass, field
 from time import time
+import uuid
 
 import discord
 from dotenv import load_dotenv
 
 from runtime_core.logging_utils import get_logger
 from runtime_core.models import Task
+from runtime_core.runner import RunnerPolicy, RuntimeRunner
 
 from examples.deep_agent_runtime.bootstrap import (
     TASK_KIND_MAIN_RESEARCH,
+    TASK_KIND_WORKER_RESEARCH,
     build_example_runtime,
 )
 from runtime_core.notifications import NotificationPayload, NotificationSenderBase
@@ -92,7 +95,7 @@ class MentionTaskBuilder:
         return topic or _FALLBACK_PROMPT
 
     def build_task(self, turn: int, message: discord.Message) -> Task:
-        task_id = f"discord:main:{turn}"
+        task_id = f"discord:main:{turn}_{uuid.uuid4()}"
         return Task(
             id=task_id,
             kind=TASK_KIND_MAIN_RESEARCH,
@@ -119,6 +122,14 @@ class TaskWeaveDiscordBridge:
             notification_sender=DiscordNotificationSender(
                 client, typing_controller=self._typing_controller
             )
+        )
+        self._runner = RuntimeRunner(
+            runtime=self._bundle.runtime,
+            policy=RunnerPolicy(
+                max_concurrency=2,
+                main_kinds=[TASK_KIND_MAIN_RESEARCH],
+                worker_kinds=[TASK_KIND_WORKER_RESEARCH],
+            ),
         )
         self._turn = 1
         self._runtime_worker: asyncio.Task[None] | None = None
@@ -162,7 +173,7 @@ class TaskWeaveDiscordBridge:
 
     async def _runtime_loop(self) -> None:
         while True:
-            if not await self._bundle.runtime.tick():
+            if not await self._runner.run_once():
                 await asyncio.sleep(_IDLE_SLEEP_SECONDS)
 
 

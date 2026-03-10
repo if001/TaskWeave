@@ -17,7 +17,7 @@ from runtime_core.notifications import (
     NotificationSender,
     NotificationTaskHandler,
 )
-from runtime_core.research_flow import ResearchFlow, ResearchFlowConfig
+from runtime_core.task_flow import TaskFlowConfig
 from examples.deep_agent_runtime.main_agent_runnables import (
     WorkerLaunchRecorder,
     build_main_agent_graph,
@@ -49,13 +49,13 @@ class ExampleRuntimeBundle:
 def build_example_runtime(
     notification_sender: NotificationSender | None = None,
 ) -> ExampleRuntimeBundle:
-    repository = FileTaskRepository("./.state")
+    repository = FileTaskRepository("./.state/task.json")
     registry = HandlerRegistry()
-    flow_config = ResearchFlowConfig(
+    flow_config = TaskFlowConfig(
         worker_task_kind=TASK_KIND_WORKER_RESEARCH,
         notification_task_kind=TASK_KIND_NOTIFICATION,
     )
-    flow = ResearchFlow(flow_config)
+    flow = flow_config
 
     registry.register(
         TASK_KIND_MAIN_RESEARCH,

@@ -12,7 +12,10 @@ from runtime_core.agent_types import (
     PeriodicWorkerPlan,
     normalize_main_input,
 )
-from runtime_core.research_flow import to_delayed_plans, to_periodic_plans
+from runtime_core.logging_utils import get_logger
+from runtime_core.task_flow import to_delayed_plans, to_periodic_plans
+
+logger = get_logger(__name__)
 
 
 @dataclass(slots=True)
@@ -118,6 +121,7 @@ def build_worker_request_tools(recorder: WorkerLaunchRecorder) -> list[BaseTool]
         Side effects:
             Records the request in the worker launch recorder.
         """
+        logger.info("call worker as tool!!!!!!!!!!")
         return recorder.request_worker_now(query)
 
     @tool("request_worker_at")

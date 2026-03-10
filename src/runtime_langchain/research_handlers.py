@@ -10,7 +10,13 @@ from runtime_core.agent_types import (
     WorkerAgentInput,
     WorkerAgentOutput,
 )
-from runtime_core.research_flow import ResearchFlow, to_delayed_plans, to_periodic_plans
+from runtime_core.task_flow import (
+    TaskFlowConfig,
+    build_main_task_result,
+    build_worker_task_result,
+    to_delayed_plans,
+    to_periodic_plans,
+)
 from runtime_core.models import TaskContext, TaskResult
 from runtime_langchain.runnable_handler import (
     AfterInvoke,
@@ -45,7 +51,7 @@ class MainResearchTaskHandler(RunnableTaskHandler):
     def for_langchain(
         cls,
         runnable_factory: Callable[[WorkerLaunchRecorder], CompiledStateGraphLike],
-        flow: ResearchFlow,
+        flow: TaskFlowConfig,
         prompt_builder: Callable[[str, bool], str] | None = None,
         config_mapper: ConfigMapper[AgentConfig] | None = None,
         before_invoke: BeforeInvoke[MainAgentInput] | None = None,
@@ -66,7 +72,7 @@ class MainResearchTaskHandler(RunnableTaskHandler):
     def __init__(
         self,
         runnable: AsyncRunnable[MainAgentInput, object, AgentConfig],
-        flow: ResearchFlow,
+        flow: TaskFlowConfig,
         recorder: WorkerLaunchRecorder,
         prompt_builder: Callable[[str, bool], str] | None = None,
         config_mapper: ConfigMapper[AgentConfig] | None = None,
@@ -78,14 +84,16 @@ class MainResearchTaskHandler(RunnableTaskHandler):
         def _input(ctx: TaskContext) -> MainAgentInput:
             topic = str(ctx.task.payload["topic"])
             needs_worker = bool(ctx.task.payload.get("needs_worker", False))
+            prompt = prompt_builder(topic, needs_worker)
+
             return MainAgentInput(
-                messages=[
-                    {"role": "user", "content": prompt_builder(topic, needs_worker)}
-                ],
+                messages=[{"role": "user", "content": prompt}],
                 topic=topic,
                 needs_worker=needs_worker,
                 delayed_jobs=to_delayed_plans(ctx.task.payload.get("delayed_jobs", [])),
-                periodic_jobs=to_periodic_plans(ctx.task.payload.get("periodic_jobs", [])),
+                periodic_jobs=to_periodic_plans(
+                    ctx.task.payload.get("periodic_jobs", [])
+                ),
             )
 
         def _before(ctx: TaskContext, inp: MainAgentInput) -> MainAgentInput:
@@ -96,7 +104,7 @@ class MainResearchTaskHandler(RunnableTaskHandler):
         def _output(ctx: TaskContext, raw: object) -> TaskResult:
             _ = ctx
             main_raw = _normalize_main_raw(raw, recorder)
-            return flow.build_main_result(ctx, main_raw)
+            return build_main_task_result(ctx, main_raw, config=flow)
 
         def _after(ctx: TaskContext, raw: object) -> object:
             if after_invoke is None:
@@ -133,7 +141,7 @@ class WorkerResearchTaskHandler(RunnableTaskHandler):
     def for_langchain(
         cls,
         runnable_factory: Callable[[], CompiledStateGraphLike],
-        flow: ResearchFlow,
+        flow: TaskFlowConfig,
         prompt_builder: Callable[[str], str] | None = None,
         config_mapper: ConfigMapper[AgentConfig] | None = None,
         before_invoke: BeforeInvoke[WorkerAgentInput] | None = None,
@@ -152,7 +160,7 @@ class WorkerResearchTaskHandler(RunnableTaskHandler):
     def __init__(
         self,
         runnable: AsyncRunnable[WorkerAgentInput, object, AgentConfig],
-        flow: ResearchFlow,
+        flow: TaskFlowConfig,
         prompt_builder: Callable[[str], str] | None = None,
         config_mapper: ConfigMapper[AgentConfig] | None = None,
         before_invoke: BeforeInvoke[WorkerAgentInput] | None = None,
@@ -170,7 +178,7 @@ class WorkerResearchTaskHandler(RunnableTaskHandler):
         def _output(ctx: TaskContext, raw: object) -> TaskResult:
             _ = ctx
             worker_raw = _normalize_worker_output(raw)
-            return flow.build_worker_result(ctx, worker_raw)
+            return build_worker_task_result(ctx, worker_raw, config=flow)
 
         super().__init__(
             runnable=runnable,
@@ -182,7 +190,9 @@ class WorkerResearchTaskHandler(RunnableTaskHandler):
         )
 
 
-def _normalize_main_raw(raw: object, recorder: WorkerLaunchRecorder) -> MainAgentRawResult:
+def _normalize_main_raw(
+    raw: object, recorder: WorkerLaunchRecorder
+) -> MainAgentRawResult:
     if isinstance(raw, dict) and {
         "agent_output",
         "immediate_queries",
