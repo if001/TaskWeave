@@ -3,10 +3,15 @@ from __future__ import annotations
 import asyncio
 from time import time
 
+from runtime_core.logging_utils import get_logger
+
 from runtime_core.models import Task, TaskContext, TaskResult
 from runtime_core.registry import HandlerRegistry
 from runtime_core.repository import TaskRepository
 from runtime_core.scheduler import PeriodicRule, RetryPolicy, TaskScheduler
+
+
+logger = get_logger("taskweave.runtime_core.runtime")
 
 
 class Runtime:
@@ -30,19 +35,25 @@ class Runtime:
 
         task = self._repository.lease_next_ready(now)
         if task is None:
+            logger.debug("No task leased at now=%s", now)
             return False
+
+        logger.info("Leased task id=%s kind=%s", task.id, task.kind)
 
         if self._is_cancelled(task):
             self._repository.mark_status(task.id, "cancelled", reason="cancellation requested")
+            logger.warning("Task cancelled before run id=%s", task.id)
             return True
 
         deadline = self._resolve_deadline(task)
         if self._is_deadline_exceeded(deadline, now):
             self._repository.mark_status(task.id, "failed", reason="deadline exceeded")
+            logger.error("Task deadline exceeded id=%s deadline=%s now=%s", task.id, deadline, now)
             return True
 
         attempt = self._start_task(task)
         result = await self._run_handler(task, attempt, deadline, now)
+        logger.info("Handler completed task id=%s status=%s", task.id, result.status)
         self._commit(task, result, now, attempt)
         return True
 
@@ -77,20 +88,26 @@ class Runtime:
             timeout_seconds = max(deadline_unix - now_unix, 0.0)
             return await asyncio.wait_for(handler.run(ctx), timeout=timeout_seconds)
         except asyncio.TimeoutError:
+            logger.error("Handler timeout task id=%s", task.id)
             return TaskResult(status="failed", error="handler timeout")
         except Exception as exc:  # noqa: BLE001
+            logger.exception("Handler raised exception task id=%s", task.id)
             return TaskResult(status="failed", error=str(exc))
 
     def _commit(self, task: Task, result: TaskResult, now_unix: float, attempt: int) -> None:
         self._repository.enqueue_many(result.next_tasks)
+        if result.next_tasks:
+            logger.info("Enqueued next tasks count=%s parent=%s", len(result.next_tasks), task.id)
 
         if result.status == "succeeded":
             self._repository.set_run_after(task.id, None)
             self._repository.mark_status(task.id, "succeeded")
+            logger.info("Task succeeded id=%s", task.id)
             return
 
         if result.status == "failed":
             self._repository.mark_status(task.id, "failed", reason=result.error)
+            logger.error("Task failed id=%s error=%s", task.id, result.error)
             return
 
         self._schedule_retry(task.id, now_unix, attempt, result.error)
@@ -103,6 +120,7 @@ class Runtime:
         )
         self._repository.set_run_after(task_id, run_after)
         self._repository.mark_status(task_id, "queued", reason=reason or "retry")
+        logger.warning("Task retry scheduled id=%s attempt=%s run_after=%s reason=%s", task_id, attempt, run_after, reason or "retry")
 
     def _resolve_deadline(self, task: Task) -> float | None:
         value = task.metadata.get("deadline_unix")

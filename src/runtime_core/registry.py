@@ -3,7 +3,11 @@ from __future__ import annotations
 from typing import Protocol
 
 from runtime_core.errors import UnknownTaskKindError
+from runtime_core.logging_utils import get_logger
 from runtime_core.models import TaskContext, TaskResult
+
+
+logger = get_logger("taskweave.runtime_core.registry")
 
 
 class TaskHandler(Protocol):
@@ -16,9 +20,13 @@ class HandlerRegistry:
 
     def register(self, kind: str, handler: TaskHandler) -> None:
         self._handlers[kind] = handler
+        logger.info("Handler registered kind=%s", kind)
 
     def resolve(self, kind: str) -> TaskHandler:
         try:
-            return self._handlers[kind]
+            handler = self._handlers[kind]
+            logger.info("Handler resolved kind=%s", kind)
+            return handler
         except KeyError as exc:
+            logger.error("Unknown task kind requested=%s", kind)
             raise UnknownTaskKindError(f"No handler registered for task kind: {kind}") from exc
