@@ -7,6 +7,7 @@ from time import time
 from typing import Literal, Protocol, TypedDict, cast
 
 from runtime_core.errors import TaskNotFoundError
+from runtime_core.logging_utils import get_logger
 from runtime_core.models import Task, TaskStatus
 
 _ALLOWED_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
@@ -19,6 +20,8 @@ _ALLOWED_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
 }
 
 DedupePolicy = Literal["raise", "drop"]
+
+logger = get_logger("taskweave.runtime_core.repository")
 
 
 class TransitionPolicy(Protocol):
@@ -108,6 +111,7 @@ class _TaskRepositoryBase(TaskRepository):
         if task.dedupe_key:
             self._task_id_by_dedupe_key[task.dedupe_key] = task.id
         self._persist()
+        logger.info("Task enqueued id=%s kind=%s", task.id, task.kind)
 
     def enqueue_many(self, tasks: list[Task]) -> None:
         for task in tasks:
@@ -119,6 +123,7 @@ class _TaskRepositoryBase(TaskRepository):
             if not self._is_ready(task, now_unix):
                 continue
             self.mark_status(task.id, "leased")
+            logger.info("Task leased id=%s", task.id)
             return task
         return None
 
@@ -137,16 +142,19 @@ class _TaskRepositoryBase(TaskRepository):
             )
         )
         self._persist()
+        logger.info("Task status updated id=%s %s->%s", task_id, from_status, to_status)
 
     def increment_attempt(self, task_id: str) -> int:
         self._require_task(task_id)
         self._attempts[task_id] += 1
         self._persist()
+        logger.info("Task attempt incremented id=%s attempt=%s", task_id, self._attempts[task_id])
         return self._attempts[task_id]
 
     def set_run_after(self, task_id: str, run_after: float | None) -> None:
         self._require_task(task_id).run_after = run_after
         self._persist()
+        logger.info("Task run_after set id=%s run_after=%s", task_id, run_after)
 
     def get(self, task_id: str) -> Task | None:
         return self._tasks.get(task_id)
@@ -173,8 +181,10 @@ class _TaskRepositoryBase(TaskRepository):
 
         if self._dedupe_policy == "raise":
             existing = self._task_id_by_dedupe_key[task.dedupe_key]
+            logger.error("Dedupe key collision key=%s task_id=%s", task.dedupe_key, existing)
             raise ValueError(f"Dedupe key already exists: {task.dedupe_key} (task_id={existing})")
 
+        logger.warning("Task dropped due to dedupe key=%s", task.dedupe_key)
         return False
 
     def _persist(self) -> None:
@@ -196,6 +206,7 @@ class FileTaskRepository(_TaskRepositoryBase):
         super().__init__(transition_policy=transition_policy, dedupe_policy=dedupe_policy)
         self._load()
         self._persist()
+        logger.info("FileTaskRepository initialized path=%s", self._file_path)
 
     def _persist(self) -> None:
         self._file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -206,6 +217,7 @@ class FileTaskRepository(_TaskRepositoryBase):
 
     def _load(self) -> None:
         if not self._file_path.exists():
+            logger.warning("Repository file does not exist yet path=%s", self._file_path)
             return
 
         state = cast(_RepositoryState, json.loads(self._file_path.read_text(encoding="utf-8")))
@@ -235,6 +247,7 @@ class FileTaskRepository(_TaskRepositoryBase):
             )
             for transition in state["transitions"]
         ]
+        logger.info("Repository state loaded tasks=%s transitions=%s", len(self._tasks), len(self.transitions))
 
     def _serialize_state(self) -> _RepositoryState:
         return {

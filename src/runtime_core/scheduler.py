@@ -3,7 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable
 
+from runtime_core.logging_utils import get_logger
 from runtime_core.models import Task
+
+
+logger = get_logger("taskweave.runtime_core.scheduler")
 
 
 @dataclass(slots=True)
@@ -37,7 +41,9 @@ class TaskScheduler:
         return task.run_after <= now_unix
 
     def next_retry_time(self, now_unix: float, attempt: int, retry_policy: RetryPolicy) -> float:
-        return retry_policy.next_run_after(now_unix=now_unix, attempt=attempt)
+        next_time = retry_policy.next_run_after(now_unix=now_unix, attempt=attempt)
+        logger.info("Next retry time calculated attempt=%s next_run=%s", attempt, next_time)
+        return next_time
 
     def generate_periodic_tasks(self, now_unix: float, rules: list[PeriodicRule]) -> list[Task]:
         generated: list[Task] = []
@@ -48,12 +54,12 @@ class TaskScheduler:
             sequence = self._emitted_count.get(rule.rule_id, 0) + 1
             self._emitted_count[rule.rule_id] = sequence
             self._next_run_by_rule[rule.rule_id] = now_unix + rule.interval_seconds
-            generated.append(
-                Task(
-                    id=f"periodic:{rule.rule_id}:{sequence}",
-                    kind=rule.kind,
-                    payload=rule.payload_factory(),
-                    metadata=rule.metadata_factory(),
-                )
+            task = Task(
+                id=f"periodic:{rule.rule_id}:{sequence}",
+                kind=rule.kind,
+                payload=rule.payload_factory(),
+                metadata=rule.metadata_factory(),
             )
+            generated.append(task)
+            logger.info("Periodic task generated rule=%s task_id=%s", rule.rule_id, task.id)
         return generated

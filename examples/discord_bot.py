@@ -6,9 +6,10 @@ import os
 from dataclasses import dataclass, field
 from time import time
 
-from dotenv import load_dotenv
 import discord
+from dotenv import load_dotenv
 
+from runtime_core.logging_utils import get_logger
 from runtime_core.models import Task
 
 from examples.deep_agent_runtime.bootstrap import (
@@ -26,6 +27,9 @@ _EXIT_NOTE = "Discord bot started. Mention this bot in a channel to create tasks
 _IDLE_SLEEP_SECONDS = 0.5
 _TYPING_REFRESH_SECONDS = 8.0
 _FALLBACK_PROMPT = "Please help with this request."
+
+
+logger = get_logger("taskweave.examples.discord_bot")
 
 
 @dataclass(slots=True)
@@ -64,13 +68,16 @@ class DiscordNotificationSender(NotificationSenderBase):
         channel_id = payload.get("discord_channel_id")
         message = payload.get("message", "")
         if channel_id is None or not message.strip():
+            logger.warning("Skip notification: channel_id or message is invalid")
             return
 
         channel = self._client.get_channel(channel_id)
         if not isinstance(channel, discord.TextChannel):
+            logger.error("Skip notification: unknown text channel id=%s", channel_id)
             return
 
         await channel.send(message)
+        logger.info("Notification sent to channel=%s", channel_id)
 
         if payload.get("notification_kind") == "main_result":
             request_task_id = payload.get("discord_request_task_id")
@@ -122,6 +129,7 @@ class TaskWeaveDiscordBridge:
     async def start(self) -> None:
         if self._runtime_worker is None:
             self._runtime_worker = asyncio.create_task(self._runtime_loop())
+            logger.info("Runtime loop started")
 
     async def stop(self) -> None:
         await self._typing_controller.stop_all()
@@ -130,18 +138,27 @@ class TaskWeaveDiscordBridge:
         self._runtime_worker.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await self._runtime_worker
+        logger.info("Runtime loop stopped")
 
     async def on_mention(self, message: discord.Message) -> None:
         user = self._client.user
         if user is None:
+            logger.error("Client user is unavailable; mention ignored")
             return
         if not isinstance(message.channel, discord.TextChannel):
+            logger.warning("Non-text channel mention ignored: channel=%s", message.channel)
             return
 
         builder = MentionTaskBuilder(bot_user_id=user.id)
         task = builder.build_task(self._turn, message)
         self._typing_controller.start(task.id, message.channel)
         self._bundle.repository.enqueue(task)
+        logger.info(
+            "Task enqueued: id=%s channel=%s author=%s",
+            task.id,
+            message.channel.id,
+            message.author.id,
+        )
         self._turn += 1
 
     async def _runtime_loop(self) -> None:
@@ -153,6 +170,7 @@ class TaskWeaveDiscordBridge:
 def _require_token() -> str:
     token = os.getenv(_DISCORD_BOT_TOKEN, "").strip()
     if not token:
+        logger.error("Environment variable %s is not set", _DISCORD_BOT_TOKEN)
         raise RuntimeError(f"Set token before running this example.")
     return token
 
@@ -166,7 +184,7 @@ async def _run() -> None:
     @client.event
     async def on_ready() -> None:
         await bridge.start()
-        print(_EXIT_NOTE)
+        logger.info(_EXIT_NOTE)
 
     @client.event
     async def on_message(message: discord.Message) -> None:
@@ -177,6 +195,9 @@ async def _run() -> None:
 
     try:
         await client.start(_require_token())
+    except Exception:
+        logger.exception("Discord bot terminated unexpectedly")
+        raise
     finally:
         await bridge.stop()
 
