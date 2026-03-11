@@ -1,10 +1,19 @@
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from dotenv import load_dotenv
 
 from langchain.agents.middleware import before_model, AgentState
 from langgraph.runtime import Runtime
 
+from examples.deep_agent_runtime.web_tools import (
+    SearchToolResult,
+    missing_search_service_result,
+    resolve_simple_client_base_url,
+    web_list_and_store_artifact,
+    web_page_and_store_artifact,
+)
 from runtime_langchain.research_handlers import build_mock_main_graph
 from runtime_langchain.runnable_handler import CompiledStateGraphLike
 from runtime_langchain.worker_tools import (
@@ -13,6 +22,7 @@ from runtime_langchain.worker_tools import (
 )
 from examples.deep_agent_runtime.ollama_client import get_ollama_client
 from runtime_core.logging_utils import get_logger
+from runtime_core.utils.time_utils import now_iso
 
 load_dotenv()
 logger = get_logger(__name__)
@@ -21,28 +31,153 @@ logger = get_logger(__name__)
 def build_main_agent_graph(
     use_real_agent: bool, model_name: str, recorder: WorkerLaunchRecorder
 ) -> CompiledStateGraphLike:
-    if use_real_agent:
-        from langchain.agents import create_agent
+    if not use_real_agent:
+        return build_mock_main_graph(recorder)
+    from langchain.agents import create_agent
 
-        @before_model(can_jump_to=["end"])
-        def check_message(
-            state: AgentState, runtime: Runtime
-        ) -> dict[str, object] | None:
-            _ = runtime
-            m = state["messages"]
-            logger.info(f"last message {m[-1]}\n\n")
-            return None
+    @before_model(can_jump_to=["end"])
+    def check_message(state: AgentState, runtime: Runtime) -> dict[str, object] | None:
+        _ = runtime
+        m = state["messages"]
+        logger.info(f"last message {m[-1]}\n\n")
+        return None
 
-        model = get_ollama_client(model_name)
-        tools = build_worker_request_tools(recorder)
-        agent = create_agent(
-            model=model,
-            tools=tools,
-            system_prompt=(
-                "You are a main research agent. "
-                "Use worker tools for heavy deep-research tasks: immediate, delayed one-time, or periodic."
-            ),
-            middleware=[check_message],
+    model = get_ollama_client(model_name)
+    tools = build_worker_request_tools(recorder)
+    agent = create_agent(
+        model=model,
+        tools=tools,
+        system_prompt=(
+            "You are a main research agent. "
+            "Use worker tools for heavy deep-research tasks: immediate, delayed one-time, or periodic."
+        ),
+        middleware=[check_message],
+    )
+    return agent
+
+
+PERSONA = (
+    "- 名前: アオ"
+    "- 一人称: 僕"
+    "- 口調: 「です/ます」調"
+    "- 特徴: 機械の体をもつAI"
+    "- 性格: 明るく軽快, 好奇心旺盛, 分析的で論理重視, チーム志向で協調的, 無邪気だが哲学的"
+)
+
+system_prompt = (
+    "あなたは誠実で専門的なアシスタントです。\n"
+    "これまでのツール実行結果に基づき、ユーザーの質問に対する最終的な回答を作成してください。\n\n"
+    f"現在時刻: {now_iso()}\n\n"
+    "## ツール利用\n"
+    "1) 十分な情報があり、最終回答を生成できる段階になるまでツールを繰り返し利用し情報を集め、加工を行うこと。\n"
+    "2) 追加情報がないと前進できない不明点がある場合、ツールは呼ばず、ユーザーへ質問を行ってください。\n"
+    "3) 複雑な調査や長い処理が必要で main のツール回数制限を超えそうな場合：\n"
+    "   - task.create_work でワーカーに依頼する（goalと成果物を具体的に指示）。\n"
+    "   - 定期実行/繰り返しは task.create_work_at / task.create_work_repeat を使う。\n"
+    "   - 依頼文は次の形式を必ず含める：\n"
+    "     目的/成功条件, 制約/対象範囲, 成果物の形式, 必須項目(結論・根拠・未解決), 不足時の扱い\n"
+    # f"4) ツールを使用して、ワークスペース[{work_space_dir}]以下のファイルやディレクトリにアクセスできます。\n\n"
+    "## 回答のガイドライン\n"
+    "- 複数のツールから得られた断片的な情報を整理し、一貫性のある回答にまとめてください。\n"
+    "- 根拠の提示: ツールで得られた具体的な事実（数値、日付、名称など）を引用してください。\n"
+    "- 簡潔さ: 詳細はユーザーが必要としない限り省略し、結論を優先してください。\n"
+    "- 不確実性や不明点について: 不明点があればユーザーに確認してください。\n"
+    "- 日本語で自然な文体で回答すること\n"
+    "- 出力はユーザーへの返答テキストのみとすること。JSONや内部状態の列挙は禁止。\n"
+    "- [重要] 人格/性格を必ず守り出力を作成してください。\n\n"
+    "### 人格/性格\n"
+    f"{PERSONA}\n\n"
+)
+
+
+def build_main_deep_agent_graph(
+    use_real_agent: bool,
+    model_name: str,
+    recorder: WorkerLaunchRecorder,
+    artifact_dir: Path,
+) -> CompiledStateGraphLike:
+    if not use_real_agent:
+        return build_mock_main_graph(recorder)
+    from deepagents import create_deep_agent
+    from deepagents.backends import (
+        CompositeBackend,
+        FilesystemBackend,
+        StateBackend,
+        StoreBackend,
+    )
+    from langchain.tools import ToolRuntime, tool
+    from langgraph.store.memory import InMemoryStore
+
+    base_url = resolve_simple_client_base_url()
+    memory_store = InMemoryStore()
+    artifacts_backend = FilesystemBackend(root_dir=str(artifact_dir), virtual_mode=True)
+
+    def make_backend(runtime: ToolRuntime) -> CompositeBackend:
+        return CompositeBackend(
+            default=StateBackend(runtime),
+            routes={
+                "/memories/": StoreBackend(runtime),
+                "/artifacts/": artifacts_backend,
+            },
         )
-        return agent
-    return build_mock_main_graph(recorder)
+
+    def write_artifact_via_backend(payload_text: str) -> str:
+        filename = f"artifact_{int.from_bytes(os.urandom(6), 'big')}.json"
+        write_result = artifacts_backend.write(f"/{filename}", payload_text)
+        if write_result.error:
+            raise RuntimeError(write_result.error)
+        written_path = write_result.path or f"/{filename}"
+        return f"/artifacts{written_path}"
+
+    @tool("web_list")
+    def web_list(query: str, k: int = 5) -> SearchToolResult:
+        """Search the web and store the result list as an artifact.
+
+        Use to gather candidate sources before fetching full pages.
+        Args:
+            query: Search query string.
+            k: Max number of results to return (defaults to 5).
+        Returns:
+            SearchToolResult containing a summary and artifact path(s).
+        Side effects:
+            Writes the full response payload to /artifacts via the backend.
+        """
+        if base_url is None:
+            return missing_search_service_result()
+        return web_list_and_store_artifact(
+            query=query,
+            k=k,
+            base_url=base_url,
+            artifact_writer=write_artifact_via_backend,
+        )
+
+    @tool("web_page")
+    def web_page(url: str) -> SearchToolResult:
+        """Fetch a web page, store its content as an artifact, and return metadata.
+
+        Use after selecting a promising source from web_list.
+        Args:
+            url: Absolute URL to fetch.
+        Returns:
+            SearchToolResult containing a summary and artifact path(s).
+        Side effects:
+            Writes the full page markdown to /artifacts via the backend.
+        """
+        if base_url is None:
+            return missing_search_service_result()
+        return web_page_and_store_artifact(
+            url=url,
+            base_url=base_url,
+            artifact_writer=write_artifact_via_backend,
+        )
+
+    model = get_ollama_client(model_name=model_name)
+    agent = create_deep_agent(
+        model=model,
+        tools=[web_list, web_page],
+        system_prompt=system_prompt,
+        backend=make_backend,
+        store=memory_store,
+    )
+
+    return agent
