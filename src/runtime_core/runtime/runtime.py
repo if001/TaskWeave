@@ -3,13 +3,12 @@ from __future__ import annotations
 import asyncio
 from time import time
 
-from runtime_core.logging_utils import get_logger
-
-from runtime_core.models import Task, TaskContext, TaskResult
-from runtime_core.registry import HandlerRegistry
-from runtime_core.repository import TaskRepository
-from runtime_core.worker_recorder import WorkerLaunchRecorder
-from runtime_core.scheduler import PeriodicRule, RetryPolicy, TaskScheduler
+from ..infra import get_logger
+from ..types import Task, TaskContext, TaskResult
+from .registry import HandlerRegistry
+from .repository import TaskRepository
+from ..tasks.worker_recorder import WorkerLaunchRecorder
+from .scheduler import PeriodicRule, RetryPolicy, TaskScheduler
 
 
 logger = get_logger("taskweave.runtime_core.runtime")

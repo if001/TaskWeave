@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Protocol, TypeVar, cast
 
-from runtime_core.models import TaskContext, TaskResult
-from runtime_core.agent_types import AgentConfig
+from runtime_core.types import AgentConfig, TaskContext, TaskResult
 
 InputT = TypeVar("InputT", contravariant=True)
 OutputT = TypeVar("OutputT", covariant=True)

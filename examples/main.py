@@ -3,9 +3,8 @@ from __future__ import annotations
 import asyncio
 from time import time
 import uuid
-from runtime_core.models import Task
-from runtime_core.repository import TaskRepository
-from runtime_core.runner import RunnerPolicy, RuntimeRunner
+from runtime_core.types import Task
+from runtime_core.runtime import RunnerPolicy, RuntimeRunner, TaskRepository
 
 from examples.deep_agent_runtime.bootstrap import (
     TASK_KIND_MAIN_RESEARCH,
@@ -97,6 +96,7 @@ def _print_notification(repository: TaskRepository, notification_id: str) -> Non
     notification = repository.get(notification_id)
     if notification is None:
         return
+    print("notification.payload:", notification.payload)
     message = str(notification.payload.get("message", "")).strip()
     if message:
         print(f"agent> notification {message}")

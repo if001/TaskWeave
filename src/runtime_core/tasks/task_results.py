@@ -2,14 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from runtime_core.agent_types import MainAgentRawResult, WorkerAgentOutput
-from runtime_core.models import Task, TaskContext, TaskResult
-from runtime_core.notifications import (
+from ..types import MainAgentRawResult, Task, TaskContext, TaskResult, WorkerAgentOutput
+from ..notifications import (
     NotificationPayload,
     extract_notification_metadata,
     render_output_message,
 )
-from runtime_core.task_plans import parse_float, parse_int
+from .task_plans import parse_float, parse_int
 
 
 @dataclass(slots=True)

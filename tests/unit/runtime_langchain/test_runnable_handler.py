@@ -1,7 +1,7 @@
 import asyncio
 import unittest
 
-from runtime_core.models import Task, TaskContext, TaskResult
+from runtime_core.types import Task, TaskContext, TaskResult
 from runtime_langchain.runnable_handler import RunnableTaskHandler
 
 

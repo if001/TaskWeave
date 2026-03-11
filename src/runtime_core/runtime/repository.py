@@ -6,9 +6,8 @@ from pathlib import Path
 from time import time
 from typing import Literal, Protocol, TypedDict, cast
 
-from runtime_core.errors import TaskNotFoundError
-from runtime_core.logging_utils import get_logger
-from runtime_core.models import Task, TaskStatus
+from ..infra import TaskNotFoundError, get_logger
+from ..types import Task, TaskStatus
 
 _ALLOWED_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
     "queued": {"leased", "cancelled"},

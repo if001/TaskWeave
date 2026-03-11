@@ -2,9 +2,8 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from runtime_core.errors import UnknownTaskKindError
-from runtime_core.logging_utils import get_logger
-from runtime_core.models import TaskContext, TaskResult
+from ..infra import UnknownTaskKindError, get_logger
+from ..types import TaskContext, TaskResult
 
 
 logger = get_logger("taskweave.runtime_core.registry")

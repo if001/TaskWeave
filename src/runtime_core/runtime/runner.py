@@ -4,9 +4,9 @@ import asyncio
 from dataclasses import dataclass
 from time import time
 
-from runtime_core.logging_utils import get_logger
-from runtime_core.models import Task
-from runtime_core.runtime import Runtime
+from ..infra import get_logger
+from ..types import Task
+from .runtime import Runtime
 
 logger = get_logger("taskweave.runtime_core.runner")
 

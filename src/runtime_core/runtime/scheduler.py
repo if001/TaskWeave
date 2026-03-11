@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable
 
-from runtime_core.logging_utils import get_logger
-from runtime_core.models import Task
+from ..infra import get_logger
+from ..types import Task
 
 
 logger = get_logger("taskweave.runtime_core.scheduler")

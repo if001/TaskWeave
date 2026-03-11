@@ -2,8 +2,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from runtime_core.models import Task
-from runtime_core.repository import FileTaskRepository
+from runtime_core.types import Task
+from runtime_core.runtime import FileTaskRepository
 
 
 class FileTaskRepositoryTests(unittest.TestCase):

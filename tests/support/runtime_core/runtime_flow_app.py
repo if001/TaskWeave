@@ -3,10 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Protocol
 
-from runtime_core.models import Task, TaskContext, TaskResult
-from runtime_core.registry import HandlerRegistry
-from runtime_core.repository import InMemoryTaskRepository
-from runtime_core.runtime import Runtime
+from runtime_core.types import Task, TaskContext, TaskResult
+from runtime_core.runtime import HandlerRegistry, InMemoryTaskRepository, Runtime
 
 
 class ArtifactService(Protocol):

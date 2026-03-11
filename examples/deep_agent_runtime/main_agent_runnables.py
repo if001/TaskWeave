@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 
 from langchain.agents.middleware import before_model, AgentState
 from langgraph.runtime import Runtime
+from langchain_core.tools import BaseTool
 
 from examples.deep_agent_runtime.web_tools import (
     SearchToolResult,
@@ -14,14 +15,9 @@ from examples.deep_agent_runtime.web_tools import (
     web_list_and_store_artifact,
     web_page_and_store_artifact,
 )
-from runtime_langchain.research_handlers import build_mock_main_graph
 from runtime_langchain.runnable_handler import CompiledStateGraphLike
-from runtime_langchain.worker_tools import (
-    WorkerLaunchRecorder,
-    build_worker_request_tools,
-)
 from examples.deep_agent_runtime.ollama_client import get_ollama_client
-from runtime_core.logging_utils import get_logger
+from runtime_core.infra import get_logger
 from runtime_core.utils.time_utils import now_iso
 
 load_dotenv()
@@ -29,10 +25,8 @@ logger = get_logger(__name__)
 
 
 def build_main_agent_graph(
-    use_real_agent: bool, model_name: str, recorder: WorkerLaunchRecorder
+    model_name: str, tools: list[BaseTool]
 ) -> CompiledStateGraphLike:
-    if not use_real_agent:
-        return build_mock_main_graph(recorder)
     from langchain.agents import create_agent
 
     @before_model(can_jump_to=["end"])
@@ -43,7 +37,6 @@ def build_main_agent_graph(
         return None
 
     model = get_ollama_client(model_name)
-    tools = build_worker_request_tools(recorder)
     agent = create_agent(
         model=model,
         tools=tools,
@@ -91,13 +84,10 @@ system_prompt = (
 
 
 def build_main_deep_agent_graph(
-    use_real_agent: bool,
     model_name: str,
-    recorder: WorkerLaunchRecorder,
+    tools: list[BaseTool],
     artifact_dir: Path,
 ) -> CompiledStateGraphLike:
-    if not use_real_agent:
-        return build_mock_main_graph(recorder)
     from deepagents import create_deep_agent
     from deepagents.backends import (
         CompositeBackend,
@@ -172,9 +162,10 @@ def build_main_deep_agent_graph(
         )
 
     model = get_ollama_client(model_name=model_name)
+    all_tools = [*tools, web_list, web_page]
     agent = create_deep_agent(
         model=model,
-        tools=[web_list, web_page],
+        tools=all_tools,
         system_prompt=system_prompt,
         backend=make_backend,
         store=memory_store,

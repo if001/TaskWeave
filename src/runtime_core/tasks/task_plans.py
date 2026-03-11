@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from runtime_core.agent_types import DelayedWorkerPlan, PeriodicWorkerPlan
+from ..types import DelayedWorkerPlan, PeriodicWorkerPlan
 
 
 def to_delayed_plans(value: object) -> list[DelayedWorkerPlan]:

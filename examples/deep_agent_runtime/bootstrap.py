@@ -3,10 +3,13 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-from runtime_core.models import Task
-from runtime_core.registry import HandlerRegistry
-from runtime_core.repository import FileTaskRepository, TaskRepository
-from runtime_core.runtime import Runtime
+from runtime_core.types import Task
+from runtime_core.runtime import (
+    FileTaskRepository,
+    HandlerRegistry,
+    Runtime,
+    TaskRepository,
+)
 from runtime_langchain.research_handlers import (
     MainResearchTaskHandler,
     WorkerResearchTaskHandler,
@@ -17,7 +20,7 @@ from runtime_core.notifications import (
     NotificationSender,
     NotificationTaskHandler,
 )
-from runtime_core.task_results import TaskResultConfig
+from runtime_core.tasks import TaskResultConfig
 from runtime_langchain.task_orchestrator import TaskOrchestrator
 from examples.deep_agent_runtime.main_agent_runnables import build_main_deep_agent_graph
 from examples.deep_agent_runtime.worker_agent_runnables import (

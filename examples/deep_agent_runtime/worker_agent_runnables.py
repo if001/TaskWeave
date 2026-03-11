@@ -13,7 +13,7 @@ from examples.deep_agent_runtime.web_tools import (
     web_page_and_store_artifact,
 )
 
-from runtime_core.agent_types import WorkerAgentInput, WorkerAgentOutput
+from runtime_core.types import WorkerAgentInput, WorkerAgentOutput
 from runtime_langchain.runnable_handler import CompiledStateGraphLike
 
 

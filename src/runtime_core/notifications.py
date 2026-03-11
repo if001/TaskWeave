@@ -5,8 +5,7 @@ from typing import Protocol, TypedDict
 
 from typing import cast
 
-from runtime_core.agent_types import MainAgentOutput, WorkerAgentOutput
-from runtime_core.models import TaskContext, TaskResult
+from .types import MainAgentOutput, TaskContext, TaskResult, WorkerAgentOutput
 
 
 class NotificationPayload(TypedDict, total=False):

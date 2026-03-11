@@ -2,14 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from runtime_core.agent_types import (
+from ..types import (
     DelayedWorkerPlan,
     MainAgentInput,
     MainAgentOutput,
     MainAgentRawResult,
     PeriodicWorkerPlan,
 )
-from runtime_core.task_plans import to_delayed_plans, to_periodic_plans
+from .task_plans import to_delayed_plans, to_periodic_plans
 
 
 @dataclass(slots=True)

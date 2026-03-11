@@ -10,9 +10,9 @@ import uuid
 import discord
 from dotenv import load_dotenv
 
-from runtime_core.logging_utils import get_logger
-from runtime_core.models import Task
-from runtime_core.runner import RunnerPolicy, RuntimeRunner
+from runtime_core.infra import get_logger
+from runtime_core.types import Task
+from runtime_core.runtime import RunnerPolicy, RuntimeRunner
 
 from examples.deep_agent_runtime.bootstrap import (
     TASK_KIND_MAIN_RESEARCH,
