@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Callable
 
 from langchain_core.runnables import RunnableConfig
-from langgraph.graph import CompiledStateGraph
+from langgraph.graph.state import CompiledStateGraph
 
 from runtime_core.tasks import WorkerLaunchRecorder
 from runtime_core.tasks import to_delayed_plans, to_periodic_plans
@@ -17,8 +17,6 @@ from .runnable_handler import (
 from .task_orchestrator import (
     GraphInput,
     TaskOrchestrator,
-    MainAgentRunOutput,
-    WorkerAgentRunOutput,
 )
 
 
@@ -41,12 +39,12 @@ def _default_agent_config(_: TaskContext) -> RunnableConfig | None:
 class MainResearchTaskHandler(RunnableTaskHandler):
     def __init__(
         self,
-        runnable: CompiledStateGraph[GraphInput, MainAgentRunOutput],
+        runnable: CompiledStateGraph[GraphInput, None, GraphInput, GraphInput],
         orchestrator: TaskOrchestrator,
         prompt_builder: Callable[[str], str] | None = None,
         config_mapper: ConfigMapper[RunnableConfig] | None = None,
         before_invoke: BeforeInvoke[GraphInput] | None = None,
-        after_invoke: AfterInvoke[MainAgentRunOutput] | None = None,
+        after_invoke: Callable[[TaskContext, GraphInput], GraphInput] | None = None,
     ) -> None:
         prompt_builder = prompt_builder or _default_main_prompt
 
@@ -64,17 +62,19 @@ class MainResearchTaskHandler(RunnableTaskHandler):
             _record_scheduled_workers(ctx, recorder)
             return inp
 
-        def _output(ctx: TaskContext, raw: MainAgentRunOutput) -> TaskResult:
+        def _output(ctx: TaskContext, raw: object) -> TaskResult:
             _ = ctx
-            return orchestrator.build_main_result(ctx, raw)
+            normalized = _coerce_graph_output(raw)
+            return orchestrator.build_main_result(ctx, normalized)
 
-        def _after(ctx: TaskContext, raw: MainAgentRunOutput) -> MainAgentRunOutput:
+        def _after(ctx: TaskContext, raw: object) -> object:
+            normalized = _coerce_graph_output(raw)
             if after_invoke is None:
-                return raw
-            return after_invoke(ctx, raw)
+                return normalized
+            return after_invoke(ctx, normalized)
 
         super().__init__(
-            runnable=runnable,
+            ainvoke=runnable.ainvoke,
             input_mapper=_input,
             output_mapper=_output,
             config_mapper=config_mapper or _default_agent_config,
@@ -86,12 +86,12 @@ class MainResearchTaskHandler(RunnableTaskHandler):
 class WorkerResearchTaskHandler(RunnableTaskHandler):
     def __init__(
         self,
-        runnable: CompiledStateGraph[GraphInput, WorkerAgentRunOutput],
+        runnable: CompiledStateGraph[GraphInput, None, GraphInput, GraphInput],
         orchestrator: TaskOrchestrator,
         prompt_builder: Callable[[str], str] | None = None,
         config_mapper: ConfigMapper[RunnableConfig] | None = None,
         before_invoke: BeforeInvoke[GraphInput] | None = None,
-        after_invoke: AfterInvoke[WorkerAgentRunOutput] | None = None,
+        after_invoke: Callable[[TaskContext, GraphInput], GraphInput] | None = None,
     ) -> None:
         prompt_builder = prompt_builder or _default_worker_prompt
 
@@ -101,17 +101,18 @@ class WorkerResearchTaskHandler(RunnableTaskHandler):
                 messages=[{"role": "user", "content": prompt_builder(query)}],
             )
 
-        def _output(ctx: TaskContext, raw: WorkerAgentRunOutput) -> TaskResult:
+        def _output(ctx: TaskContext, raw: object) -> TaskResult:
             _ = ctx
-            return orchestrator.build_worker_result(ctx, raw)
+            normalized = _coerce_graph_output(raw)
+            return orchestrator.build_worker_result(ctx, normalized)
 
         super().__init__(
-            runnable=runnable,
+            ainvoke=runnable.ainvoke,
             input_mapper=_input,
             output_mapper=_output,
             config_mapper=config_mapper or _default_agent_config,
             before_invoke=before_invoke,
-            after_invoke=after_invoke,
+            after_invoke=_wrap_after_invoke(after_invoke),
         )
 
 
@@ -127,3 +128,26 @@ def _record_scheduled_workers(
             periodic["interval_seconds"],
             periodic["repeat_count"],
         )
+
+
+def _coerce_graph_output(raw: object) -> GraphInput:
+    if isinstance(raw, dict):
+        messages = raw.get("messages")
+        if isinstance(messages, list):
+            return GraphInput(messages=messages)
+    return GraphInput(
+        messages=[{"role": "assistant", "content": str(raw).strip()}]
+    )
+
+
+def _wrap_after_invoke(
+    after_invoke: Callable[[TaskContext, GraphInput], GraphInput] | None,
+) -> AfterInvoke[object] | None:
+    if after_invoke is None:
+        return None
+
+    def _wrapped(ctx: TaskContext, raw: object) -> object:
+        normalized = _coerce_graph_output(raw)
+        return after_invoke(ctx, normalized)
+
+    return _wrapped

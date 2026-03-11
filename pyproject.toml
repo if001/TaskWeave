@@ -25,6 +25,8 @@ examples = [
 [tool.pyright]
 venvPath = "."
 venv = ".venv"
+typeCheckingMode = "basic"
+reportExplicitAny = "error"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/runtime_core", "src/runtime_langchain"]

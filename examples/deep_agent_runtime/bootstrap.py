@@ -13,12 +13,8 @@ from runtime_core.runtime import (
     TaskRepository,
     TaskScheduler,
 )
-from langgraph.graph import CompiledStateGraph
-from runtime_langchain.task_orchestrator import (
-    GraphInput,
-    MainAgentRunOutput,
-    WorkerAgentRunOutput,
-)
+from langgraph.graph.state import CompiledStateGraph
+from runtime_langchain.task_orchestrator import GraphInput
 from runtime_core.notifications import NotificationSender
 from runtime_core.tasks import TaskResultConfig
 from runtime_langchain.runtime_builder import ResearchRuntimeBuilder
@@ -112,7 +108,7 @@ def build_example_task_id(*, turn: int) -> str:
 
 def _build_main_agent_graph(
     builder: ResearchRuntimeBuilder,
-) -> CompiledStateGraph[GraphInput, MainAgentRunOutput]:
+) -> CompiledStateGraph[GraphInput, None, GraphInput, GraphInput]:
     model_name = os.getenv(_MODEL_ENV, DEFAULT_MODEL_NAME)
     if not _is_real_agent_enabled():
         return builder.mock_main_graph()
@@ -123,7 +119,7 @@ def _build_main_agent_graph(
     )
 
 
-def _build_worker_agent_graph() -> CompiledStateGraph[GraphInput, WorkerAgentRunOutput]:
+def _build_worker_agent_graph() -> CompiledStateGraph[GraphInput, None, GraphInput, GraphInput]:
     model_name = os.getenv(_MODEL_ENV, DEFAULT_MODEL_NAME)
     return build_worker_agent_graph(
         use_real_agent=_is_real_agent_enabled(),

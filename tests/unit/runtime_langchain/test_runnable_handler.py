@@ -14,7 +14,9 @@ class _FakeRunnable:
         self,
         input: dict[str, JsonValue],
         config: dict[str, JsonValue] | None = None,
+        **kwargs: object,
     ) -> dict[str, JsonValue]:
+        _ = kwargs
         self.last_input = input
         self.last_config = config
         return {"echo": input, "config": config}
@@ -48,7 +50,7 @@ class RunnableTaskHandlerTests(unittest.TestCase):
             )
 
         handler = RunnableTaskHandler(
-            runnable=runnable,
+            ainvoke=runnable.ainvoke,
             input_mapper=_input,
             config_mapper=_config,
             output_mapper=_output,
@@ -72,7 +74,7 @@ class RunnableTaskHandlerTests(unittest.TestCase):
             return TaskResult(status="succeeded")
 
         handler = RunnableTaskHandler(
-            runnable=runnable,
+            ainvoke=runnable.ainvoke,
             input_mapper=_input,
             output_mapper=_output,
         )

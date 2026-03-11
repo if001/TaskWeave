@@ -5,7 +5,7 @@ from typing import TypeAlias, TypedDict, TypeGuard
 from langchain_core.messages import AnyMessage
 from langchain_core.tools import BaseTool
 
-from langgraph.graph import CompiledStateGraph, StateGraph, END
+from langgraph.graph.state import CompiledStateGraph, StateGraph, END
 
 from runtime_core.types import (
     MainAgentOutput,
@@ -28,14 +28,9 @@ class GraphInput(TypedDict):
     messages: list[Message | AnyMessage]
 
 
-class GraphOutput(TypedDict):
-    messages: list[Message | AnyMessage]
+MainAgentRunOutput: TypeAlias = MainAgentRawResult | MainAgentOutput | GraphInput
+WorkerAgentRunOutput: TypeAlias = WorkerAgentOutput | GraphInput
 
-
-MainAgentRunOutput: TypeAlias = (
-    MainAgentRawResult | MainAgentOutput | GraphInput | GraphOutput | str
-)
-WorkerAgentRunOutput: TypeAlias = WorkerAgentOutput | GraphInput | GraphOutput | str
 
 
 class TaskOrchestrator:
@@ -62,7 +57,7 @@ class TaskOrchestrator:
         worker_raw = _normalize_worker_output(raw)
         return build_worker_task_result(ctx, worker_raw, config=self._config)
 
-    def mock_main_graph(self) -> CompiledStateGraph[GraphInput, GraphInput]:
+    def mock_main_graph(self) -> CompiledStateGraph[GraphInput, None, GraphInput, GraphInput]:
         def _echo(state: GraphInput) -> GraphInput:
             return state
 
@@ -98,12 +93,7 @@ def _normalize_worker_output(raw: WorkerAgentRunOutput) -> WorkerAgentOutput:
 
 
 def _extract_output_text(
-    raw: MainAgentRawResult
-    | GraphOutput
-    | GraphInput
-    | MainAgentOutput
-    | WorkerAgentOutput
-    | str,
+    raw: MainAgentRawResult | GraphInput | MainAgentOutput | WorkerAgentOutput,
 ) -> str:
     if _is_main_agent_raw_result(raw):
         return _extract_output_text(raw["agent_output"])

@@ -17,14 +17,14 @@ from examples.deep_agent_runtime.web_tools import (
 )
 
 from runtime_core.types import Message
-from langgraph.graph import CompiledStateGraph, StateGraph, END
-from runtime_langchain.task_orchestrator import GraphInput, WorkerAgentRunOutput
+from langgraph.graph.state import CompiledStateGraph, StateGraph, END
+from runtime_langchain.task_orchestrator import GraphInput
 from langchain_core.messages import AnyMessage
 
 
 def build_worker_agent_graph(
     use_real_agent: bool, backend: str, model_name: str, artifact_dir: Path
-) -> CompiledStateGraph[GraphInput, WorkerAgentRunOutput]:
+) -> CompiledStateGraph[GraphInput, None, GraphInput, GraphInput]:
     if not use_real_agent:
         return _build_echo_worker_graph()
     if backend == "deepagent":
@@ -44,7 +44,7 @@ def resolve_deepagent_artifact_dir(env_name: str) -> Path:
     return path
 
 
-def _build_echo_worker_graph() -> CompiledStateGraph[GraphInput, WorkerAgentRunOutput]:
+def _build_echo_worker_graph() -> CompiledStateGraph[GraphInput, None, GraphInput, GraphInput]:
     def _respond(state: GraphInput) -> GraphInput:
         query = _extract_last_message_text(state["messages"])
         return GraphInput(
@@ -65,7 +65,7 @@ def _build_echo_worker_graph() -> CompiledStateGraph[GraphInput, WorkerAgentRunO
 
 def _build_langchain_worker_graph(
     model_name: str,
-) -> CompiledStateGraph[GraphInput, WorkerAgentRunOutput]:
+) -> CompiledStateGraph[GraphInput, None, GraphInput, GraphInput]:
     from langchain.agents import create_agent
 
     model = get_ollama_client(model_name=model_name)
@@ -88,7 +88,7 @@ def _extract_last_message_text(messages: list[Message | AnyMessage]) -> str:
 
 def _build_deepagent_worker_graph(
     model_name: str, artifact_dir: Path
-) -> CompiledStateGraph[GraphInput, WorkerAgentRunOutput]:
+) -> CompiledStateGraph[GraphInput, None, GraphInput, GraphInput]:
     from deepagents import create_deep_agent
     from deepagents.backends import (
         CompositeBackend,

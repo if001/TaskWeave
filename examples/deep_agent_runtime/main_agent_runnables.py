@@ -9,7 +9,8 @@ from dotenv import load_dotenv
 
 from langchain.agents.middleware import before_model, AgentState
 from langgraph.runtime import Runtime
-from langgraph.graph import CompiledStateGraph
+from langgraph.graph.state import CompiledStateGraph
+
 from langchain_core.tools import BaseTool
 
 from examples.deep_agent_runtime.web_tools import (
@@ -27,12 +28,12 @@ load_dotenv()
 logger = get_logger(__name__)
 
 
-from runtime_langchain.task_orchestrator import GraphInput, MainAgentRunOutput
+from runtime_langchain.task_orchestrator import GraphInput
 
 
 def build_main_agent_graph(
     model_name: str, tools: list[BaseTool]
-) -> CompiledStateGraph[GraphInput, MainAgentRunOutput]:
+) -> CompiledStateGraph[GraphInput, None, GraphInput, GraphInput]:
     from langchain.agents import create_agent
 
     @before_model(can_jump_to=["end"])
@@ -93,7 +94,7 @@ def build_main_deep_agent_graph(
     model_name: str,
     tools: list[BaseTool],
     artifact_dir: Path,
-) -> CompiledStateGraph[GraphInput, MainAgentRunOutput]:
+) -> CompiledStateGraph[GraphInput, None, GraphInput, GraphInput]:
     from deepagents import create_deep_agent
     from deepagents.backends import (
         CompositeBackend,

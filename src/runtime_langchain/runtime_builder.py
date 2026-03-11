@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from langchain_core.tools import BaseTool
-from langgraph.graph import CompiledStateGraph
+from langgraph.graph.state import CompiledStateGraph
 
 from runtime_core.notifications import (
     NoopNotificationSender,
@@ -16,9 +16,7 @@ from runtime_core.tasks import TaskResultConfig
 from .research_handlers import MainResearchTaskHandler, WorkerResearchTaskHandler
 from .task_orchestrator import (
     GraphInput,
-    MainAgentRunOutput,
     TaskOrchestrator,
-    WorkerAgentRunOutput,
 )
 
 
@@ -35,7 +33,7 @@ class ResearchRuntimeBuilder:
     def worker_tools(self) -> list[BaseTool]:
         return self._orchestrator.worker_request_tools()
 
-    def mock_main_graph(self) -> CompiledStateGraph[GraphInput, GraphInput]:
+    def mock_main_graph(self) -> CompiledStateGraph[GraphInput, None, GraphInput, GraphInput]:
         return self._orchestrator.mock_main_graph()
 
     def register_main(
@@ -43,7 +41,7 @@ class ResearchRuntimeBuilder:
         registry: HandlerRegistry,
         *,
         kind: str = "main",
-        runnable: CompiledStateGraph[GraphInput, MainAgentRunOutput],
+        runnable: CompiledStateGraph[GraphInput, None, GraphInput, GraphInput],
         prompt_builder: Callable[[str], str] | None = None,
     ) -> None:
         registry.register(
@@ -60,7 +58,7 @@ class ResearchRuntimeBuilder:
         registry: HandlerRegistry,
         *,
         kind: str,
-        runnable: CompiledStateGraph[GraphInput, WorkerAgentRunOutput],
+        runnable: CompiledStateGraph[GraphInput, None, GraphInput, GraphInput],
         prompt_builder: Callable[[str], str] | None = None,
     ) -> None:
         registry.register(
