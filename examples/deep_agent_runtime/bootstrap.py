@@ -17,10 +17,11 @@ from runtime_core.notifications import (
     NotificationSender,
     NotificationTaskHandler,
 )
-from runtime_core.task_flow import TaskFlowConfig
+from runtime_core.task_results import TaskResultConfig
 from examples.deep_agent_runtime.main_agent_runnables import (
     WorkerLaunchRecorder,
     build_main_agent_graph,
+    build_main_deep_agent_graph,
 )
 from examples.deep_agent_runtime.worker_agent_runnables import (
     build_worker_agent_graph,
@@ -51,11 +52,10 @@ def build_example_runtime(
 ) -> ExampleRuntimeBundle:
     repository = FileTaskRepository("./.state/task.json")
     registry = HandlerRegistry()
-    flow_config = TaskFlowConfig(
+    flow = TaskResultConfig(
         worker_task_kind=TASK_KIND_WORKER_RESEARCH,
         notification_task_kind=TASK_KIND_NOTIFICATION,
     )
-    flow = flow_config
 
     registry.register(
         TASK_KIND_MAIN_RESEARCH,
@@ -95,18 +95,26 @@ def seed_example_task(repository: TaskRepository, topic: str) -> Task:
 def _build_main_agent_graph(
     recorder: WorkerLaunchRecorder,
 ) -> CompiledStateGraphLike:
-    return build_main_agent_graph(
+    model_name = os.getenv(_MODEL_ENV, DEFAULT_MODEL_NAME)
+    return build_main_deep_agent_graph(
         use_real_agent=_is_real_agent_enabled(),
-        model_name=os.getenv(_MODEL_ENV, DEFAULT_MODEL_NAME),
+        model_name=model_name,
         recorder=recorder,
+        artifact_dir=resolve_deepagent_artifact_dir(_DEEPAGENT_ARTIFACT_DIR_ENV),
     )
+    # return build_main_agent_graph(
+    #     use_real_agent=_is_real_agent_enabled(),
+    #     model_name=model_name,
+    #     recorder=recorder,
+    # )
 
 
 def _build_worker_agent_graph() -> CompiledStateGraphLike:
+    model_name = os.getenv(_MODEL_ENV, DEFAULT_MODEL_NAME)
     return build_worker_agent_graph(
         use_real_agent=_is_real_agent_enabled(),
         backend=_resolve_real_agent_backend(),
-        model_name=os.getenv(_MODEL_ENV, DEFAULT_MODEL_NAME),
+        model_name=model_name,
         artifact_dir=resolve_deepagent_artifact_dir(_DEEPAGENT_ARTIFACT_DIR_ENV),
     )
 
