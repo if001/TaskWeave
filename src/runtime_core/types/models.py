@@ -1,7 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Literal
+
+from .json_types import JsonValue
+
+
+def _empty_json_dict() -> dict[str, JsonValue]:
+    return {}
+
+
+def _empty_task_list() -> list["Task"]:
+    return []
 
 TaskStatus = Literal[
     "queued",
@@ -19,12 +29,12 @@ ResultStatus = Literal["succeeded", "failed", "retry"]
 class Task:
     id: str
     kind: str
-    payload: dict[str, Any]
+    payload: dict[str, JsonValue]
     status: TaskStatus = "queued"
     run_after: float | None = None
     parent_task_id: str | None = None
     dedupe_key: str | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, JsonValue] = field(default_factory=_empty_json_dict)
 
 
 @dataclass(slots=True)
@@ -38,6 +48,6 @@ class TaskContext:
 @dataclass(slots=True)
 class TaskResult:
     status: ResultStatus
-    output: dict[str, Any] = field(default_factory=dict)
-    next_tasks: list[Task] = field(default_factory=list)
+    output: dict[str, JsonValue] = field(default_factory=_empty_json_dict)
+    next_tasks: list[Task] = field(default_factory=_empty_task_list)
     error: str | None = None

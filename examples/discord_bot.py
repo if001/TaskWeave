@@ -33,9 +33,13 @@ _FALLBACK_PROMPT = "Please help with this request."
 logger = get_logger("taskweave.examples.discord_bot")
 
 
+def _empty_task_dict() -> dict[str, asyncio.Task[None]]:
+    return {}
+
+
 @dataclass(slots=True)
 class TypingTaskController:
-    tasks: dict[str, asyncio.Task[None]] = field(default_factory=dict)
+    tasks: dict[str, asyncio.Task[None]] = field(default_factory=_empty_task_dict)
 
     def start(self, request_task_id: str, channel: discord.TextChannel) -> None:
         self.stop(request_task_id)
@@ -192,12 +196,12 @@ async def _run() -> None:
     bridge = TaskWeaveDiscordBridge(client=client)
 
     @client.event
-    async def on_ready() -> None:
+    async def on_ready() -> None:  # pyright: ignore[reportUnusedFunction]
         await bridge.start()
         logger.info(_EXIT_NOTE)
 
     @client.event
-    async def on_message(message: discord.Message) -> None:
+    async def on_message(message: discord.Message) -> None:  # pyright: ignore[reportUnusedFunction]
         if message.author.bot or client.user is None:
             return
         if client.user in message.mentions:

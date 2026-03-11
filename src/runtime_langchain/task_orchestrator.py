@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+from typing import TypeAlias, TypedDict, TypeGuard
+
+from langchain_core.messages import AnyMessage
 from langchain_core.tools import BaseTool
 
+from langgraph.graph import CompiledStateGraph, StateGraph, END
+
 from runtime_core.types import (
-    MainAgentInput,
     MainAgentOutput,
     MainAgentRawResult,
+    Message,
     TaskContext,
     TaskResult,
     WorkerAgentOutput,
@@ -15,9 +20,22 @@ from runtime_core.tasks import (
     WorkerLaunchRecorder,
     build_main_task_result,
     build_worker_task_result,
-    collect_worker_requests,
 )
 from .worker_tools import build_worker_request_tools
+
+
+class GraphInput(TypedDict):
+    messages: list[Message | AnyMessage]
+
+
+class GraphOutput(TypedDict):
+    messages: list[Message | AnyMessage]
+
+
+MainAgentRunOutput: TypeAlias = (
+    MainAgentRawResult | MainAgentOutput | GraphInput | GraphOutput | str
+)
+WorkerAgentRunOutput: TypeAlias = WorkerAgentOutput | GraphInput | GraphOutput | str
 
 
 class TaskOrchestrator:
@@ -34,66 +52,67 @@ class TaskOrchestrator:
     def worker_request_tools(self) -> list[BaseTool]:
         return build_worker_request_tools(self._recorder)
 
-    def build_main_result(self, ctx: TaskContext, raw: object) -> TaskResult:
+    def build_main_result(self, ctx: TaskContext, raw: MainAgentRunOutput) -> TaskResult:
         main_raw = _normalize_main_raw(raw, self._recorder)
         return build_main_task_result(ctx, main_raw, config=self._config)
 
-    def build_worker_result(self, ctx: TaskContext, raw: object) -> TaskResult:
+    def build_worker_result(
+        self, ctx: TaskContext, raw: WorkerAgentRunOutput
+    ) -> TaskResult:
         worker_raw = _normalize_worker_output(raw)
         return build_worker_task_result(ctx, worker_raw, config=self._config)
 
-    def mock_main_graph(self):
-        recorder = self._recorder
+    def mock_main_graph(self) -> CompiledStateGraph[GraphInput, GraphInput]:
+        def _echo(state: GraphInput) -> GraphInput:
+            return state
 
-        class _MockMainGraph:
-            async def ainvoke(
-                self,
-                input: MainAgentInput,
-                config: object | None = None,
-            ) -> MainAgentRawResult:
-                _ = config
-                return collect_worker_requests(recorder, input)
-
-        return _MockMainGraph()
+        graph = StateGraph(GraphInput)
+        graph.add_node("main", _echo)
+        graph.set_entry_point("main")
+        graph.add_edge("main", END)
+        return graph.compile()
 
 
 def _normalize_main_raw(
-    raw: object, recorder: WorkerLaunchRecorder
+    raw: MainAgentRunOutput, recorder: WorkerLaunchRecorder
 ) -> MainAgentRawResult:
-    if isinstance(raw, dict) and {
-        "agent_output",
-        "immediate_queries",
-        "delayed_queries",
-        "periodic_queries",
-    }.issubset(raw.keys()):
-        return raw  # type: ignore[return-value]
+    if _is_main_agent_raw_result(raw):
+        return raw
     drained = recorder.drain()
     drained["agent_output"] = _normalize_main_output(raw)
     return drained
 
 
-def _normalize_main_output(raw: object) -> MainAgentOutput:
+def _normalize_main_output(raw: MainAgentRunOutput) -> MainAgentOutput:
+    if _is_main_agent_raw_result(raw):
+        return raw["agent_output"]
+    return MainAgentOutput(
+        final_output=_extract_output_text(
+            raw,
+        )
+    )
+
+
+def _normalize_worker_output(raw: WorkerAgentRunOutput) -> WorkerAgentOutput:
+    return WorkerAgentOutput(final_output=_extract_output_text(raw))
+
+
+def _extract_output_text(
+    raw: MainAgentRawResult
+    | GraphOutput
+    | GraphInput
+    | MainAgentOutput
+    | WorkerAgentOutput
+    | str,
+) -> str:
+    if _is_main_agent_raw_result(raw):
+        return _extract_output_text(raw["agent_output"])
     if isinstance(raw, dict):
-        if "final_output" in raw:
-            return MainAgentOutput(
-                final_output=str(raw.get("final_output", "")).strip(),
-            )
-        return MainAgentOutput(final_output=_extract_message_output(raw))
-    return MainAgentOutput(final_output=str(raw).strip())
+        return _extract_message_output(raw.get("messages", []))
+    return str(raw).strip()
 
 
-def _normalize_worker_output(raw: object) -> WorkerAgentOutput:
-    if isinstance(raw, dict):
-        if "final_output" in raw:
-            return WorkerAgentOutput(final_output=str(raw.get("final_output", "")).strip())
-        return WorkerAgentOutput(final_output=_extract_message_output(raw))
-    return WorkerAgentOutput(final_output=str(raw).strip())
-
-
-def _extract_message_output(raw: dict[str, object]) -> str:
-    messages = raw.get("messages")
-    if not isinstance(messages, list):
-        return str(raw).strip()
+def _extract_message_output(messages: list[Message | AnyMessage]) -> str:
     for message in reversed(messages):
         content = _extract_message_content(message)
         if content:
@@ -101,7 +120,7 @@ def _extract_message_output(raw: dict[str, object]) -> str:
     return ""
 
 
-def _extract_message_content(message: object) -> str:
+def _extract_message_content(message: Message | AnyMessage) -> str:
     if isinstance(message, dict):
         role = str(message.get("role", "")).lower()
         if role and role not in {"assistant", "ai"}:
@@ -113,9 +132,22 @@ def _extract_message_content(message: object) -> str:
     return ""
 
 
-def _is_ai_message(message: object) -> bool:
+def _is_ai_message(message: Message | AnyMessage) -> bool:
     try:
         from langchain_core.messages import AIMessage
     except Exception:
         return False
     return isinstance(message, AIMessage)
+
+
+def _is_main_agent_raw_result(
+    raw: MainAgentRunOutput | GraphInput,
+) -> TypeGuard[MainAgentRawResult]:
+    if not isinstance(raw, dict):
+        return False
+    return {
+        "agent_output",
+        "immediate_queries",
+        "delayed_queries",
+        "periodic_queries",
+    }.issubset(raw.keys())

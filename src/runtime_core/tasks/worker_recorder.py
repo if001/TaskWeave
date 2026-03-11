@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 
 from ..types import (
     DelayedWorkerPlan,
+    JsonValue,
     MainAgentInput,
     MainAgentOutput,
     MainAgentRawResult,
@@ -12,11 +13,23 @@ from ..types import (
 from .task_plans import to_delayed_plans, to_periodic_plans
 
 
+def _empty_str_list() -> list[str]:
+    return []
+
+
+def _empty_delayed_list() -> list[DelayedWorkerPlan]:
+    return []
+
+
+def _empty_periodic_list() -> list[PeriodicWorkerPlan]:
+    return []
+
+
 @dataclass(slots=True)
 class WorkerLaunchRecorder:
-    immediate_queries: list[str] = field(default_factory=list)
-    delayed_queries: list[DelayedWorkerPlan] = field(default_factory=list)
-    periodic_queries: list[PeriodicWorkerPlan] = field(default_factory=list)
+    immediate_queries: list[str] = field(default_factory=_empty_str_list)
+    delayed_queries: list[DelayedWorkerPlan] = field(default_factory=_empty_delayed_list)
+    periodic_queries: list[PeriodicWorkerPlan] = field(default_factory=_empty_periodic_list)
 
     def request_worker_now(self, query: str) -> str:
         normalized = str(query).strip()
@@ -74,10 +87,26 @@ def collect_worker_requests(
 ) -> MainAgentRawResult:
     topic = str(request.get("topic", "")).strip()
 
-    for delayed in to_delayed_plans(request.get("delayed_jobs", [])):
+    delayed_jobs: list[JsonValue] = [
+        {
+            "query": item["query"],
+            "delay_seconds": item["delay_seconds"],
+        }
+        for item in request.get("delayed_jobs", [])
+    ]
+    for delayed in to_delayed_plans(delayed_jobs):
         recorder.request_worker_at(delayed["query"], delayed["delay_seconds"])
 
-    for periodic in to_periodic_plans(request.get("periodic_jobs", [])):
+    periodic_jobs: list[JsonValue] = [
+        {
+            "query": item["query"],
+            "start_in_seconds": item["start_in_seconds"],
+            "interval_seconds": item["interval_seconds"],
+            "repeat_count": item["repeat_count"],
+        }
+        for item in request.get("periodic_jobs", [])
+    ]
+    for periodic in to_periodic_plans(periodic_jobs):
         recorder.request_worker_periodic(
             periodic["query"],
             periodic["start_in_seconds"],

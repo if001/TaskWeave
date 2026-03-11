@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable, Mapping, Protocol, TypeVar, cast
+from typing import Callable, Protocol, TypeVar
 
-from runtime_core.types import AgentConfig, TaskContext, TaskResult
+from runtime_core.types import TaskContext, TaskResult
 
 InputT = TypeVar("InputT", contravariant=True)
 OutputT = TypeVar("OutputT", covariant=True)
@@ -10,21 +10,7 @@ ConfigT = TypeVar("ConfigT", contravariant=True)
 
 
 class AsyncRunnable(Protocol[InputT, OutputT, ConfigT]):
-    async def ainvoke(self, inp: InputT, config: ConfigT | None = None) -> OutputT: ...
-
-
-class CompiledStateGraphLike(Protocol):
-    async def ainvoke(
-        self,
-        input: Any,
-        config: "LangChainRunnableConfig | None" = None,
-    ) -> object: ...
-
-
-if TYPE_CHECKING:
-    from langchain_core.runnables import RunnableConfig as LangChainRunnableConfig
-else:
-    LangChainRunnableConfig = Mapping[str, object]
+    async def ainvoke(self, input: InputT, config: ConfigT | None = None) -> OutputT: ...
 
 
 InputMapper = Callable[[TaskContext], InputT]
@@ -34,27 +20,16 @@ BeforeInvoke = Callable[[TaskContext, InputT], InputT]
 AfterInvoke = Callable[[TaskContext, OutputT], OutputT]
 
 
-def wrap_compiled_state_graph(
-    graph: CompiledStateGraphLike,
-) -> AsyncRunnable[object, object, AgentConfig]:
-    class _Adapter:
-        async def ainvoke(
-            self, inp: object, config: AgentConfig | None = None
-        ) -> object:
-            return await graph.ainvoke(
-                input=inp,
-                config=_to_langchain_config(config),
-            )
-
-    return _Adapter()
+def _default_config_mapper(_: TaskContext) -> None:
+    return None
 
 
-def _to_langchain_config(
-    config: AgentConfig | None,
-) -> LangChainRunnableConfig | None:
-    if config is None:
-        return None
-    return cast(LangChainRunnableConfig, dict(config))
+def _default_before_invoke(_: TaskContext, inp: InputT) -> InputT:
+    return inp
+
+
+def _default_after_invoke(_: TaskContext, raw: OutputT) -> OutputT:
+    return raw
 
 
 class RunnableTaskHandler:
@@ -70,9 +45,9 @@ class RunnableTaskHandler:
         self._runnable = runnable
         self._input_mapper = input_mapper
         self._output_mapper = output_mapper
-        self._config_mapper = config_mapper or (lambda _: None)
-        self._before_invoke = before_invoke or (lambda _, inp: inp)
-        self._after_invoke = after_invoke or (lambda _, raw: raw)
+        self._config_mapper = config_mapper or _default_config_mapper
+        self._before_invoke = before_invoke or _default_before_invoke
+        self._after_invoke = after_invoke or _default_after_invoke
 
     async def run(self, ctx: TaskContext) -> TaskResult:
         inp = self._input_mapper(ctx)

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+# pyright: reportUnknownVariableType=false
+# pyright: reportUnknownParameterType=false
+
 import os
 from pathlib import Path
 from dotenv import load_dotenv
 
 from langchain.agents.middleware import before_model, AgentState
 from langgraph.runtime import Runtime
+from langgraph.graph import CompiledStateGraph
 from langchain_core.tools import BaseTool
 
 from examples.deep_agent_runtime.web_tools import (
@@ -15,7 +19,6 @@ from examples.deep_agent_runtime.web_tools import (
     web_list_and_store_artifact,
     web_page_and_store_artifact,
 )
-from runtime_langchain.runnable_handler import CompiledStateGraphLike
 from examples.deep_agent_runtime.ollama_client import get_ollama_client
 from runtime_core.infra import get_logger
 from runtime_core.utils.time_utils import now_iso
@@ -24,13 +27,16 @@ load_dotenv()
 logger = get_logger(__name__)
 
 
+from runtime_langchain.task_orchestrator import GraphInput, MainAgentRunOutput
+
+
 def build_main_agent_graph(
     model_name: str, tools: list[BaseTool]
-) -> CompiledStateGraphLike:
+) -> CompiledStateGraph[GraphInput, MainAgentRunOutput]:
     from langchain.agents import create_agent
 
     @before_model(can_jump_to=["end"])
-    def check_message(state: AgentState, runtime: Runtime) -> dict[str, object] | None:
+    def check_message(state: AgentState, runtime: Runtime) -> dict[str, str] | None:
         _ = runtime
         m = state["messages"]
         logger.info(f"last message {m[-1]}\n\n")
@@ -46,7 +52,7 @@ def build_main_agent_graph(
         ),
         middleware=[check_message],
     )
-    return agent
+    return agent  # pyright: ignore[reportReturnType]
 
 
 PERSONA = (
@@ -87,7 +93,7 @@ def build_main_deep_agent_graph(
     model_name: str,
     tools: list[BaseTool],
     artifact_dir: Path,
-) -> CompiledStateGraphLike:
+) -> CompiledStateGraph[GraphInput, MainAgentRunOutput]:
     from deepagents import create_deep_agent
     from deepagents.backends import (
         CompositeBackend,
@@ -171,4 +177,4 @@ def build_main_deep_agent_graph(
         store=memory_store,
     )
 
-    return agent
+    return agent  # pyright: ignore[reportReturnType]

@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from time import time
-from typing import Literal, Protocol, TypedDict, cast
+from typing import Literal, Protocol, TypedDict
 
 from ..infra import TaskNotFoundError, get_logger
-from ..types import Task, TaskStatus
+from ..types import JsonValue, Task, TaskStatus
 
 _ALLOWED_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
     "queued": {"leased", "cancelled"},
@@ -36,8 +36,8 @@ class DefaultTransitionPolicy:
 @dataclass(slots=True)
 class TaskTransition:
     task_id: str
-    from_status: str
-    to_status: str
+    from_status: TaskStatus
+    to_status: TaskStatus
     timestamp_unix: float
     reason: str | None = None
 
@@ -45,18 +45,18 @@ class TaskTransition:
 class _TaskSerialized(TypedDict):
     id: str
     kind: str
-    payload: dict[str, object]
-    status: str
+    payload: dict[str, JsonValue]
+    status: TaskStatus
     run_after: float | None
     parent_task_id: str | None
     dedupe_key: str | None
-    metadata: dict[str, object]
+    metadata: dict[str, JsonValue]
 
 
 class _TransitionSerialized(TypedDict):
     task_id: str
-    from_status: str
-    to_status: str
+    from_status: TaskStatus
+    to_status: TaskStatus
     timestamp_unix: float
     reason: str | None
 
@@ -81,7 +81,7 @@ class TaskRepository(Protocol):
     ) -> Task | None: ...
 
     def mark_status(
-        self, task_id: str, to_status: str, reason: str | None = None
+        self, task_id: str, to_status: TaskStatus, reason: str | None = None
     ) -> None: ...
 
     def increment_attempt(self, task_id: str) -> int: ...
@@ -134,12 +134,12 @@ class _TaskRepositoryBase(TaskRepository):
         return self._lease_next_ready(now_unix, set(kinds))
 
     def mark_status(
-        self, task_id: str, to_status: str, reason: str | None = None
+        self, task_id: str, to_status: TaskStatus, reason: str | None = None
     ) -> None:
         task = self._require_task(task_id)
         from_status = task.status
-        self._transition_policy.validate(from_status, cast(TaskStatus, to_status))
-        task.status = cast(TaskStatus, to_status)
+        self._transition_policy.validate(from_status, to_status)
+        task.status = to_status
         self.transitions.append(
             TaskTransition(
                 task_id=task_id,
@@ -253,15 +253,15 @@ class FileTaskRepository(_TaskRepositoryBase):
             )
             return
 
-        state = cast(
-            _RepositoryState, json.loads(self._file_path.read_text(encoding="utf-8"))
+        state = _parse_state(
+            json.loads(self._file_path.read_text(encoding="utf-8"))
         )
         self._tasks = {
             task_id: Task(
                 id=task_data["id"],
                 kind=task_data["kind"],
                 payload=dict(task_data["payload"]),
-                status=cast(TaskStatus, task_data["status"]),
+                status=task_data["status"],
                 run_after=task_data["run_after"],
                 parent_task_id=task_data["parent_task_id"],
                 dedupe_key=task_data["dedupe_key"],
@@ -291,14 +291,143 @@ class FileTaskRepository(_TaskRepositoryBase):
     def _serialize_state(self) -> _RepositoryState:
         return {
             "tasks": {
-                task_id: cast(_TaskSerialized, asdict(task))
+                task_id: _TaskSerialized(
+                    id=task.id,
+                    kind=task.kind,
+                    payload=dict(task.payload),
+                    status=task.status,
+                    run_after=task.run_after,
+                    parent_task_id=task.parent_task_id,
+                    dedupe_key=task.dedupe_key,
+                    metadata=dict(task.metadata),
+                )
                 for task_id, task in self._tasks.items()
             },
             "order": list(self._order),
             "attempts": dict(self._attempts),
             "task_id_by_dedupe_key": dict(self._task_id_by_dedupe_key),
             "transitions": [
-                cast(_TransitionSerialized, asdict(transition))
+                _TransitionSerialized(
+                    task_id=transition.task_id,
+                    from_status=transition.from_status,
+                    to_status=transition.to_status,
+                    timestamp_unix=transition.timestamp_unix,
+                    reason=transition.reason,
+                )
                 for transition in self.transitions
             ],
         }
+
+
+def _parse_state(value: JsonValue) -> _RepositoryState:
+    if not isinstance(value, dict):
+        raise ValueError("Invalid repository state")
+    tasks_raw = value.get("tasks")
+    order_raw = value.get("order")
+    attempts_raw = value.get("attempts")
+    dedupe_raw = value.get("task_id_by_dedupe_key")
+    transitions_raw = value.get("transitions")
+    if not isinstance(tasks_raw, dict):
+        raise ValueError("Invalid tasks in repository state")
+    if not isinstance(order_raw, list):
+        raise ValueError("Invalid order in repository state")
+    if not isinstance(attempts_raw, dict):
+        raise ValueError("Invalid attempts in repository state")
+    if not isinstance(dedupe_raw, dict):
+        raise ValueError("Invalid dedupe index in repository state")
+    if not isinstance(transitions_raw, list):
+        raise ValueError("Invalid transitions in repository state")
+
+    tasks: dict[str, _TaskSerialized] = {}
+    for task_id, task_data in tasks_raw.items():
+        if not isinstance(task_data, dict):
+            raise ValueError("Invalid task entry")
+        tasks[task_id] = _parse_task(task_data)
+
+    order = [item for item in order_raw if isinstance(item, str)]
+    attempts = {
+        key: int(value)
+        for key, value in attempts_raw.items()
+        if isinstance(value, (int, float, bool))
+    }
+    task_id_by_dedupe_key = {
+        key: value
+        for key, value in dedupe_raw.items()
+        if isinstance(value, str)
+    }
+    transitions = [_parse_transition(item) for item in transitions_raw if isinstance(item, dict)]
+
+    return _RepositoryState(
+        tasks=tasks,
+        order=order,
+        attempts=attempts,
+        task_id_by_dedupe_key=task_id_by_dedupe_key,
+        transitions=transitions,
+    )
+
+
+def _parse_task(value: dict[str, JsonValue]) -> _TaskSerialized:
+    task_id = _require_str(value.get("id"))
+    kind = _require_str(value.get("kind"))
+    status = _parse_task_status(value.get("status"))
+    payload = _require_dict(value.get("payload"))
+    metadata = _require_dict(value.get("metadata"))
+    run_after = _parse_optional_float(value.get("run_after"))
+    parent_task_id = _parse_optional_str(value.get("parent_task_id"))
+    dedupe_key = _parse_optional_str(value.get("dedupe_key"))
+    return _TaskSerialized(
+        id=task_id,
+        kind=kind,
+        payload=payload,
+        status=status,
+        run_after=run_after,
+        parent_task_id=parent_task_id,
+        dedupe_key=dedupe_key,
+        metadata=metadata,
+    )
+
+
+def _parse_transition(value: dict[str, JsonValue]) -> _TransitionSerialized:
+    return _TransitionSerialized(
+        task_id=_require_str(value.get("task_id")),
+        from_status=_parse_task_status(value.get("from_status")),
+        to_status=_parse_task_status(value.get("to_status")),
+        timestamp_unix=_require_float(value.get("timestamp_unix")),
+        reason=_parse_optional_str(value.get("reason")),
+    )
+
+
+def _require_str(value: JsonValue | None) -> str:
+    if isinstance(value, str):
+        return value
+    raise ValueError("Expected string")
+
+
+def _parse_optional_str(value: JsonValue | None) -> str | None:
+    if value is None:
+        return None
+    return _require_str(value)
+
+
+def _require_float(value: JsonValue | None) -> float:
+    if isinstance(value, (int, float, bool)):
+        return float(value)
+    raise ValueError("Expected number")
+
+
+def _parse_optional_float(value: JsonValue | None) -> float | None:
+    if value is None:
+        return None
+    return _require_float(value)
+
+
+def _require_dict(value: JsonValue | None) -> dict[str, JsonValue]:
+    if isinstance(value, dict):
+        return dict(value)
+    raise ValueError("Expected dict")
+
+
+def _parse_task_status(value: JsonValue | None) -> TaskStatus:
+    if value in _ALLOWED_TRANSITIONS:
+        return value
+    raise ValueError("Invalid task status")

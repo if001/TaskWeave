@@ -164,7 +164,14 @@ class Runtime:
         value = task.metadata.get("deadline_unix")
         if value is None:
             return None
-        return float(value)
+        if isinstance(value, (int, float, bool)):
+            return float(value)
+        if isinstance(value, str):
+            try:
+                return float(value)
+            except ValueError:
+                return None
+        return None
 
     def _is_cancelled(self, task: Task) -> bool:
         return bool(task.metadata.get("cancellation_requested", False))

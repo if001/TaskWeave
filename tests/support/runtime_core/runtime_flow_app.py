@@ -3,24 +3,40 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Protocol
 
-from runtime_core.types import Task, TaskContext, TaskResult
+from runtime_core.types import JsonValue, Task, TaskContext, TaskResult
 from runtime_core.runtime import HandlerRegistry, InMemoryTaskRepository, Runtime
 
 
 class ArtifactService(Protocol):
-    def put_text(self, namespace: str, path: str, text: str, metadata: dict) -> str: ...
+    def put_text(
+        self, namespace: str, path: str, text: str, metadata: dict[str, JsonValue]
+    ) -> str: ...
 
     def read_text(self, artifact_id: str) -> str: ...
 
     def list_by_task(self, task_id: str) -> list[str]: ...
 
 
+def _empty_str_dict() -> dict[str, str]:
+    return {}
+
+
+def _empty_str_list_dict() -> dict[str, list[str]]:
+    return {}
+
+
+def _empty_str_list() -> list[str]:
+    return []
+
+
 @dataclass(slots=True)
 class InMemoryArtifactService:
-    _content_by_id: dict[str, str] = field(default_factory=dict)
-    _ids_by_task: dict[str, list[str]] = field(default_factory=dict)
+    _content_by_id: dict[str, str] = field(default_factory=_empty_str_dict)
+    _ids_by_task: dict[str, list[str]] = field(default_factory=_empty_str_list_dict)
 
-    def put_text(self, namespace: str, path: str, text: str, metadata: dict) -> str:
+    def put_text(
+        self, namespace: str, path: str, text: str, metadata: dict[str, JsonValue]
+    ) -> str:
         artifact_id = f"{namespace}:{path}"
         self._content_by_id[artifact_id] = text
 
@@ -38,9 +54,9 @@ class InMemoryArtifactService:
 
 @dataclass(slots=True)
 class InMemoryNotificationService:
-    sent_messages: list[str] = field(default_factory=list)
+    sent_messages: list[str] = field(default_factory=_empty_str_list)
 
-    async def send(self, payload: dict) -> None:
+    async def send(self, payload: dict[str, JsonValue]) -> None:
         self.sent_messages.append(str(payload.get("message", "")))
 
 
@@ -98,7 +114,7 @@ class WorkerHandler:
 
 
 class NotificationService(Protocol):
-    async def send(self, payload: dict) -> None: ...
+    async def send(self, payload: dict[str, JsonValue]) -> None: ...
 
 
 class NotificationHandler:

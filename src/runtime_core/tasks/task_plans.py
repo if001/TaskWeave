@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from ..types import DelayedWorkerPlan, PeriodicWorkerPlan
+from ..types import DelayedWorkerPlan, JsonValue, PeriodicWorkerPlan
 
 
-def to_delayed_plans(value: object) -> list[DelayedWorkerPlan]:
+def to_delayed_plans(value: JsonValue) -> list[DelayedWorkerPlan]:
     plans: list[DelayedWorkerPlan] = []
     for item in _iter_dict_items(value):
         query = str(item.get("query", "")).strip()
@@ -19,7 +19,7 @@ def to_delayed_plans(value: object) -> list[DelayedWorkerPlan]:
 
 
 def to_periodic_plans(
-    value: object, *, min_interval_seconds: float = 1.0
+    value: JsonValue, *, min_interval_seconds: float = 1.0
 ) -> list[PeriodicWorkerPlan]:
     plans: list[PeriodicWorkerPlan] = []
     for item in _iter_dict_items(value):
@@ -42,7 +42,7 @@ def to_periodic_plans(
     return plans
 
 
-def parse_float(value: object, default: float) -> float:
+def parse_float(value: JsonValue, default: float) -> float:
     if isinstance(value, (int, float)):
         return float(value)
     if isinstance(value, str):
@@ -53,7 +53,7 @@ def parse_float(value: object, default: float) -> float:
     return default
 
 
-def parse_int(value: object, default: int) -> int:
+def parse_int(value: JsonValue, default: int) -> int:
     if isinstance(value, bool):
         return int(value)
     if isinstance(value, int):
@@ -68,7 +68,7 @@ def parse_int(value: object, default: int) -> int:
     return default
 
 
-def _iter_dict_items(value: object) -> list[dict[str, object]]:
+def _iter_dict_items(value: JsonValue) -> list[dict[str, JsonValue]]:
     if not isinstance(value, list):
         return []
     return [item for item in value if isinstance(item, dict)]

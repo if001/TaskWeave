@@ -1,17 +1,21 @@
 import unittest
 
 from runtime_core.runtime import PeriodicRule, TaskScheduler
+from runtime_core.types import JsonValue
 
 
 class TaskSchedulerTests(unittest.TestCase):
     def test_generate_periodic_tasks_emits_on_interval(self) -> None:
         scheduler = TaskScheduler()
+        def _payload() -> dict[str, JsonValue]:
+            return {"ok": True}
+
         rules = [
             PeriodicRule(
                 rule_id="ping",
                 kind="periodic",
                 interval_seconds=10.0,
-                payload_factory=lambda: {"ok": True},
+                payload_factory=_payload,
             )
         ]
 

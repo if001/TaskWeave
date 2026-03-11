@@ -45,7 +45,7 @@ class TaskResultTests(unittest.TestCase):
             ),
             attempt=1,
         )
-        raw: WorkerAgentOutput = {"summary": "ok"}
+        raw: WorkerAgentOutput = {"final_output": "ok"}
         config = TaskResultConfig(
             worker_task_kind="worker",
             notification_task_kind="notification",

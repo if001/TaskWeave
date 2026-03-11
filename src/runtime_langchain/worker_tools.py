@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# pyright: reportUnknownVariableType=false
+
 from langchain_core.tools import BaseTool, tool
 
 from runtime_core.infra import get_logger

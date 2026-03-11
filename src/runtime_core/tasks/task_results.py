@@ -2,7 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..types import MainAgentRawResult, Task, TaskContext, TaskResult, WorkerAgentOutput
+from ..types import (
+    JsonValue,
+    MainAgentOutput,
+    MainAgentRawResult,
+    Task,
+    TaskContext,
+    TaskResult,
+    WorkerAgentOutput,
+)
 from ..notifications import (
     NotificationPayload,
     extract_notification_metadata,
@@ -38,9 +46,10 @@ def build_main_task_result(
             notification_task_kind=config.notification_task_kind,
         )
     )
+    agent_output: JsonValue = _as_output_dict(raw["agent_output"])
     return TaskResult(
         status="succeeded",
-        output={"agent_output": raw["agent_output"]},
+        output={"agent_output": agent_output},
         next_tasks=next_tasks,
     )
 
@@ -69,9 +78,10 @@ def build_worker_task_result(
             notification_task_kind=config.notification_task_kind,
         )
     )
+    worker_output: JsonValue = _as_output_dict(raw)
     return TaskResult(
         status="succeeded",
-        output={"worker_output": raw},
+        output={"worker_output": worker_output},
         next_tasks=next_tasks,
     )
 
@@ -82,6 +92,7 @@ def _build_main_tasks(
     metadata: NotificationPayload,
     config: TaskResultConfig,
 ) -> list[Task]:
+    json_metadata = _as_json_dict(metadata)
     base_time = parse_float(ctx.task.metadata.get("enqueued_at_unix"), default=0.0)
     immediate_tasks = [
         _new_worker_task(
@@ -89,7 +100,7 @@ def _build_main_tasks(
             parent_task_id=ctx.task.id,
             query=query,
             run_after=None,
-            metadata=metadata,
+            metadata=json_metadata,
             worker_task_kind=config.worker_task_kind,
         )
         for index, query in enumerate(raw["immediate_queries"], start=1)
@@ -100,7 +111,7 @@ def _build_main_tasks(
             parent_task_id=ctx.task.id,
             query=plan["query"],
             run_after=base_time + plan["delay_seconds"],
-            metadata=metadata,
+            metadata=json_metadata,
             worker_task_kind=config.worker_task_kind,
         )
         for index, plan in enumerate(raw["delayed_queries"], start=1)
@@ -115,7 +126,7 @@ def _build_main_tasks(
             remaining_runs=plan["repeat_count"],
             interval_seconds=plan["interval_seconds"],
             run_after=base_time + plan["start_in_seconds"],
-            metadata=metadata,
+            metadata=json_metadata,
             worker_task_kind=config.worker_task_kind,
         )
         for index, plan in enumerate(raw["periodic_queries"], start=1)
@@ -128,6 +139,7 @@ def _build_worker_tasks(
     metadata: NotificationPayload,
     config: TaskResultConfig,
 ) -> list[Task]:
+    json_metadata = _as_json_dict(metadata)
     periodic = _extract_periodic_state(ctx)
     if periodic is None:
         return []
@@ -140,7 +152,7 @@ def _build_worker_tasks(
         remaining_runs=periodic.remaining_runs - 1,
         interval_seconds=periodic.interval_seconds,
         run_after=periodic.next_run_after,
-        metadata=metadata,
+        metadata=json_metadata,
         worker_task_kind=config.worker_task_kind,
     )
     return [next_task]
@@ -181,7 +193,7 @@ def _new_worker_task(
     parent_task_id: str | None,
     query: str,
     run_after: float | None,
-    metadata: NotificationPayload,
+    metadata: dict[str, JsonValue],
     worker_task_kind: str,
 ) -> Task:
     return Task(
@@ -204,7 +216,7 @@ def _new_periodic_worker_task(
     remaining_runs: int,
     interval_seconds: float,
     run_after: float,
-    metadata: NotificationPayload,
+    metadata: dict[str, JsonValue],
     worker_task_kind: str,
 ) -> Task:
     task = _new_worker_task(
@@ -243,6 +255,23 @@ def _new_notification_task(
     return Task(
         id=task_id,
         kind=notification_task_kind,
-        payload=dict(payload),
+        payload=_as_json_dict(payload),
         parent_task_id=parent_task_id,
     )
+
+
+def _as_json_dict(payload: NotificationPayload) -> dict[str, JsonValue]:
+    result: dict[str, JsonValue] = {}
+    for key, value in payload.items():
+        if isinstance(value, (int, str)):
+            result[key] = value
+    return result
+
+
+def _as_output_dict(
+    output: MainAgentOutput | WorkerAgentOutput,
+) -> dict[str, JsonValue]:
+    result: dict[str, JsonValue] = {}
+    for key, value in output.items():
+        result[key] = str(value)
+    return result

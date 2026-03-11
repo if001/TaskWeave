@@ -8,9 +8,8 @@ from .agent_types import (
     PeriodicWorkerPlan,
     WorkerAgentInput,
     WorkerAgentOutput,
-    normalize_main_input,
-    normalize_worker_input,
 )
+from .json_types import JsonPrimitive, JsonValue
 from .models import ResultStatus, Task, TaskContext, TaskResult, TaskStatus
 
 __all__ = [
@@ -23,8 +22,8 @@ __all__ = [
     "PeriodicWorkerPlan",
     "MainAgentInput",
     "WorkerAgentInput",
-    "normalize_main_input",
-    "normalize_worker_input",
+    "JsonPrimitive",
+    "JsonValue",
     "TaskStatus",
     "ResultStatus",
     "Task",

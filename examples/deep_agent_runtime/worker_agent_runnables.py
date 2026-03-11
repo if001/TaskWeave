@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+# pyright: reportUnknownVariableType=false
+# pyright: reportUnknownParameterType=false
+
 import os
 from pathlib import Path
 from tempfile import gettempdir
@@ -13,13 +16,15 @@ from examples.deep_agent_runtime.web_tools import (
     web_page_and_store_artifact,
 )
 
-from runtime_core.types import WorkerAgentInput, WorkerAgentOutput
-from runtime_langchain.runnable_handler import CompiledStateGraphLike
+from runtime_core.types import Message
+from langgraph.graph import CompiledStateGraph, StateGraph, END
+from runtime_langchain.task_orchestrator import GraphInput, WorkerAgentRunOutput
+from langchain_core.messages import AnyMessage
 
 
 def build_worker_agent_graph(
     use_real_agent: bool, backend: str, model_name: str, artifact_dir: Path
-) -> CompiledStateGraphLike:
+) -> CompiledStateGraph[GraphInput, WorkerAgentRunOutput]:
     if not use_real_agent:
         return _build_echo_worker_graph()
     if backend == "deepagent":
@@ -39,23 +44,28 @@ def resolve_deepagent_artifact_dir(env_name: str) -> Path:
     return path
 
 
-def _build_echo_worker_graph() -> CompiledStateGraphLike:
-    class _EchoWorkerGraph:
-        async def ainvoke(
-            self, input: WorkerAgentInput, config: object | None = None
-        ) -> WorkerAgentOutput:
-            _ = config
-            query = str(input.get("query", "")).strip()
-            return WorkerAgentOutput(
-                final_output=f"[mock worker-agent] deep researched: {query}"
-            )
+def _build_echo_worker_graph() -> CompiledStateGraph[GraphInput, WorkerAgentRunOutput]:
+    def _respond(state: GraphInput) -> GraphInput:
+        query = _extract_last_message_text(state["messages"])
+        return GraphInput(
+            messages=[
+                {
+                    "role": "assistant",
+                    "content": f"[mock worker-agent] deep researched: {query}",
+                }
+            ],
+        )
 
-    return _EchoWorkerGraph()
+    graph = StateGraph(GraphInput)
+    graph.add_node("worker", _respond)
+    graph.set_entry_point("worker")
+    graph.add_edge("worker", END)
+    return graph.compile()
 
 
 def _build_langchain_worker_graph(
     model_name: str,
-) -> CompiledStateGraphLike:
+) -> CompiledStateGraph[GraphInput, WorkerAgentRunOutput]:
     from langchain.agents import create_agent
 
     model = get_ollama_client(model_name=model_name)
@@ -64,12 +74,21 @@ def _build_langchain_worker_graph(
         tools=[],
         system_prompt="You are a concise worker agent specialized in heavy deep research.",
     )
-    return agent
+    return agent  # pyright: ignore[reportReturnType]
+
+
+def _extract_last_message_text(messages: list[Message | AnyMessage]) -> str:
+    if not messages:
+        return ""
+    message = messages[-1]
+    if isinstance(message, dict):
+        return str(message.get("content", "")).strip()
+    return str(getattr(message, "content", "")).strip()
 
 
 def _build_deepagent_worker_graph(
     model_name: str, artifact_dir: Path
-) -> CompiledStateGraphLike:
+) -> CompiledStateGraph[GraphInput, WorkerAgentRunOutput]:
     from deepagents import create_deep_agent
     from deepagents.backends import (
         CompositeBackend,
@@ -158,4 +177,4 @@ def _build_deepagent_worker_graph(
         store=memory_store,
     )
 
-    return agent
+    return agent  # pyright: ignore[reportReturnType]

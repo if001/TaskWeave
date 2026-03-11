@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from ..infra import get_logger
-from ..types import Task
+from ..types import JsonValue, Task
 
 
 logger = get_logger("taskweave.runtime_core.scheduler")
@@ -24,8 +24,10 @@ class PeriodicRule:
     rule_id: str
     kind: str
     interval_seconds: float
-    payload_factory: Callable[[], dict]
-    metadata_factory: Callable[[], dict] = field(default_factory=lambda: (lambda: {}))
+    payload_factory: Callable[[], dict[str, JsonValue]]
+    metadata_factory: Callable[[], dict[str, JsonValue]] = field(
+        default_factory=lambda: (lambda: {})
+    )
 
 
 class TaskScheduler:
