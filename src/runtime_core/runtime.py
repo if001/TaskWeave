@@ -8,6 +8,7 @@ from runtime_core.logging_utils import get_logger
 from runtime_core.models import Task, TaskContext, TaskResult
 from runtime_core.registry import HandlerRegistry
 from runtime_core.repository import TaskRepository
+from runtime_core.worker_recorder import WorkerLaunchRecorder
 from runtime_core.scheduler import PeriodicRule, RetryPolicy, TaskScheduler
 
 
@@ -22,16 +23,22 @@ class Runtime:
         retry_policy: RetryPolicy | None = None,
         scheduler: TaskScheduler | None = None,
         periodic_rules: list[PeriodicRule] | None = None,
+        recorder: WorkerLaunchRecorder | None = None,
     ) -> None:
         self._repository = repository
         self._registry = registry
         self._retry_policy = retry_policy or RetryPolicy()
         self._scheduler = scheduler or TaskScheduler()
         self._periodic_rules = periodic_rules or []
+        self._recorder = recorder or WorkerLaunchRecorder()
 
     @property
     def repository(self) -> TaskRepository:
         return self._repository
+
+    @property
+    def recorder(self) -> WorkerLaunchRecorder:
+        return self._recorder
 
     def enqueue_periodic_tasks(self, now_unix: float) -> None:
         self._enqueue_periodic_tasks(now_unix)

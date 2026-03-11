@@ -1,21 +1,9 @@
 from __future__ import annotations
 
-from typing import Callable, cast
+from typing import Callable
 
-from runtime_core.agent_types import (
-    AgentConfig,
-    MainAgentInput,
-    MainAgentOutput,
-    MainAgentRawResult,
-    WorkerAgentInput,
-    WorkerAgentOutput,
-)
+from runtime_core.agent_types import AgentConfig, MainAgentInput, WorkerAgentInput
 from runtime_core.task_plans import to_delayed_plans, to_periodic_plans
-from runtime_core.task_results import (
-    TaskResultConfig,
-    build_main_task_result,
-    build_worker_task_result,
-)
 from runtime_core.models import TaskContext, TaskResult
 from runtime_langchain.runnable_handler import (
     AfterInvoke,
@@ -26,7 +14,7 @@ from runtime_langchain.runnable_handler import (
     CompiledStateGraphLike,
     wrap_compiled_state_graph,
 )
-from runtime_langchain.worker_tools import WorkerLaunchRecorder, collect_worker_requests
+from runtime_langchain.task_orchestrator import TaskOrchestrator
 
 
 def _default_main_prompt(topic: str) -> str:
@@ -49,19 +37,16 @@ class MainResearchTaskHandler(RunnableTaskHandler):
     @classmethod
     def for_langchain(
         cls,
-        runnable_factory: Callable[[WorkerLaunchRecorder], CompiledStateGraphLike],
-        flow: TaskResultConfig,
+        runnable: CompiledStateGraphLike,
+        orchestrator: TaskOrchestrator,
         prompt_builder: Callable[[str], str] | None = None,
         config_mapper: ConfigMapper[AgentConfig] | None = None,
         before_invoke: BeforeInvoke[MainAgentInput] | None = None,
         after_invoke: AfterInvoke[object] | None = None,
     ) -> "MainResearchTaskHandler":
-        recorder = WorkerLaunchRecorder()
-        runnable = wrap_compiled_state_graph(runnable_factory(recorder))
         return cls(
-            runnable=runnable,
-            flow=flow,
-            recorder=recorder,
+            runnable=wrap_compiled_state_graph(runnable),
+            orchestrator=orchestrator,
             prompt_builder=prompt_builder,
             config_mapper=config_mapper,
             before_invoke=before_invoke,
@@ -71,8 +56,7 @@ class MainResearchTaskHandler(RunnableTaskHandler):
     def __init__(
         self,
         runnable: AsyncRunnable[MainAgentInput, object, AgentConfig],
-        flow: TaskResultConfig,
-        recorder: WorkerLaunchRecorder,
+        orchestrator: TaskOrchestrator,
         prompt_builder: Callable[[str], str] | None = None,
         config_mapper: ConfigMapper[AgentConfig] | None = None,
         before_invoke: BeforeInvoke[MainAgentInput] | None = None,
@@ -95,15 +79,12 @@ class MainResearchTaskHandler(RunnableTaskHandler):
 
         def _before(ctx: TaskContext, inp: MainAgentInput) -> MainAgentInput:
             _ = ctx
-            recorder.drain()
+            orchestrator.recorder.drain()
             return inp
 
         def _output(ctx: TaskContext, raw: object) -> TaskResult:
             _ = ctx
-            main_raw = _normalize_main_raw(raw, recorder)
-            print("raw: ", raw)
-            print("main_raw: ", main_raw)
-            return build_main_task_result(ctx, main_raw, config=flow)
+            return orchestrator.build_main_result(ctx, raw)
 
         def _after(ctx: TaskContext, raw: object) -> object:
             if after_invoke is None:
@@ -120,36 +101,20 @@ class MainResearchTaskHandler(RunnableTaskHandler):
         )
 
 
-def build_mock_main_graph(
-    recorder: WorkerLaunchRecorder,
-) -> CompiledStateGraphLike:
-    class _MockMainGraph:
-        async def ainvoke(
-            self,
-            input: MainAgentInput,
-            config: object | None = None,
-        ) -> MainAgentRawResult:
-            _ = config
-            return collect_worker_requests(recorder, input)
-
-    return _MockMainGraph()
-
-
 class WorkerResearchTaskHandler(RunnableTaskHandler):
     @classmethod
     def for_langchain(
         cls,
-        runnable_factory: Callable[[], CompiledStateGraphLike],
-        flow: TaskResultConfig,
+        runnable: CompiledStateGraphLike,
+        orchestrator: TaskOrchestrator,
         prompt_builder: Callable[[str], str] | None = None,
         config_mapper: ConfigMapper[AgentConfig] | None = None,
         before_invoke: BeforeInvoke[WorkerAgentInput] | None = None,
         after_invoke: AfterInvoke[object] | None = None,
     ) -> "WorkerResearchTaskHandler":
-        runnable = wrap_compiled_state_graph(runnable_factory())
         return cls(
-            runnable=runnable,
-            flow=flow,
+            runnable=wrap_compiled_state_graph(runnable),
+            orchestrator=orchestrator,
             prompt_builder=prompt_builder,
             config_mapper=config_mapper,
             before_invoke=before_invoke,
@@ -159,7 +124,7 @@ class WorkerResearchTaskHandler(RunnableTaskHandler):
     def __init__(
         self,
         runnable: AsyncRunnable[WorkerAgentInput, object, AgentConfig],
-        flow: TaskResultConfig,
+        orchestrator: TaskOrchestrator,
         prompt_builder: Callable[[str], str] | None = None,
         config_mapper: ConfigMapper[AgentConfig] | None = None,
         before_invoke: BeforeInvoke[WorkerAgentInput] | None = None,
@@ -176,8 +141,7 @@ class WorkerResearchTaskHandler(RunnableTaskHandler):
 
         def _output(ctx: TaskContext, raw: object) -> TaskResult:
             _ = ctx
-            worker_raw = _normalize_worker_output(raw)
-            return build_worker_task_result(ctx, worker_raw, config=flow)
+            return orchestrator.build_worker_result(ctx, raw)
 
         super().__init__(
             runnable=runnable,
@@ -189,65 +153,4 @@ class WorkerResearchTaskHandler(RunnableTaskHandler):
         )
 
 
-def _normalize_main_raw(
-    raw: object, recorder: WorkerLaunchRecorder
-) -> MainAgentRawResult:
-    if isinstance(raw, dict) and {
-        "agent_output",
-        "immediate_queries",
-        "delayed_queries",
-        "periodic_queries",
-    }.issubset(raw.keys()):
-        return cast(MainAgentRawResult, raw)
-    drained = recorder.drain()
-    drained["agent_output"] = _normalize_main_output(raw)
-    return drained
-
-
-def _normalize_main_output(raw: object) -> MainAgentOutput:
-    if isinstance(raw, dict):
-        if "final_output" in raw:
-            return MainAgentOutput(
-                final_output=str(raw.get("final_output", "")).strip(),
-            )
-        return MainAgentOutput(final_output=_extract_message_output(raw))
-    return MainAgentOutput(final_output=str(raw).strip())
-
-
-def _normalize_worker_output(raw: object) -> WorkerAgentOutput:
-    if isinstance(raw, dict):
-        if "final_output" in raw:
-            return WorkerAgentOutput(final_output=str(raw.get("final_output", "")).strip())
-        return WorkerAgentOutput(final_output=_extract_message_output(raw))
-    return WorkerAgentOutput(final_output=str(raw).strip())
-
-
-def _extract_message_output(raw: dict[str, object]) -> str:
-    messages = raw.get("messages")
-    if not isinstance(messages, list):
-        return str(raw).strip()
-    for message in reversed(messages):
-        content = _extract_message_content(message)
-        if content:
-            return content
-    return ""
-
-
-def _extract_message_content(message: object) -> str:
-    if isinstance(message, dict):
-        role = str(message.get("role", "")).lower()
-        if role and role not in {"assistant", "ai"}:
-            return ""
-        return str(message.get("content", "")).strip()
-    if _is_ai_message(message):
-        content = getattr(message, "content", "")
-        return str(content).strip()
-    return ""
-
-
-def _is_ai_message(message: object) -> bool:
-    try:
-        from langchain_core.messages import AIMessage
-    except Exception:
-        return False
-    return isinstance(message, AIMessage)
+ 

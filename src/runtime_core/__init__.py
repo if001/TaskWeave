@@ -25,6 +25,7 @@ from runtime_core.task_results import (
     build_main_task_result,
     build_worker_task_result,
 )
+from runtime_core.worker_recorder import WorkerLaunchRecorder, collect_worker_requests
 from runtime_core.repository import DedupePolicy, FileTaskRepository, InMemoryTaskRepository, TransitionPolicy
 from runtime_core.runtime import Runtime
 from runtime_core.runner import RunnerPolicy, RuntimeRunner
@@ -66,4 +67,6 @@ __all__ = [
     "build_worker_task_result",
     "to_delayed_plans",
     "to_periodic_plans",
+    "WorkerLaunchRecorder",
+    "collect_worker_requests",
 ]

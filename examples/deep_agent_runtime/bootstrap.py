@@ -18,11 +18,8 @@ from runtime_core.notifications import (
     NotificationTaskHandler,
 )
 from runtime_core.task_results import TaskResultConfig
-from examples.deep_agent_runtime.main_agent_runnables import (
-    WorkerLaunchRecorder,
-    build_main_agent_graph,
-    build_main_deep_agent_graph,
-)
+from runtime_langchain.task_orchestrator import TaskOrchestrator
+from examples.deep_agent_runtime.main_agent_runnables import build_main_deep_agent_graph
 from examples.deep_agent_runtime.worker_agent_runnables import (
     build_worker_agent_graph,
     resolve_deepagent_artifact_dir,
@@ -52,23 +49,27 @@ def build_example_runtime(
 ) -> ExampleRuntimeBundle:
     repository = FileTaskRepository("./.state/task.json")
     registry = HandlerRegistry()
-    flow = TaskResultConfig(
-        worker_task_kind=TASK_KIND_WORKER_RESEARCH,
-        notification_task_kind=TASK_KIND_NOTIFICATION,
+    runtime = Runtime(repository=repository, registry=registry)
+    orchestrator = TaskOrchestrator(
+        config=TaskResultConfig(
+            worker_task_kind=TASK_KIND_WORKER_RESEARCH,
+            notification_task_kind=TASK_KIND_NOTIFICATION,
+        ),
+        recorder=runtime.recorder,
     )
 
     registry.register(
         TASK_KIND_MAIN_RESEARCH,
         MainResearchTaskHandler.for_langchain(
-            runnable_factory=_build_main_agent_graph,
-            flow=flow,
+            runnable=_build_main_agent_graph(orchestrator),
+            orchestrator=orchestrator,
         ),
     )
     registry.register(
         TASK_KIND_WORKER_RESEARCH,
         WorkerResearchTaskHandler.for_langchain(
-            runnable_factory=_build_worker_agent_graph,
-            flow=flow,
+            runnable=_build_worker_agent_graph(),
+            orchestrator=orchestrator,
         ),
     )
     registry.register(
@@ -77,7 +78,8 @@ def build_example_runtime(
     )
 
     return ExampleRuntimeBundle(
-        runtime=Runtime(repository=repository, registry=registry), repository=repository
+        runtime=runtime,
+        repository=repository,
     )
 
 
@@ -93,20 +95,16 @@ def seed_example_task(repository: TaskRepository, topic: str) -> Task:
 
 
 def _build_main_agent_graph(
-    recorder: WorkerLaunchRecorder,
+    orchestrator: TaskOrchestrator,
 ) -> CompiledStateGraphLike:
     model_name = os.getenv(_MODEL_ENV, DEFAULT_MODEL_NAME)
+    if not _is_real_agent_enabled():
+        return orchestrator.mock_main_graph()
     return build_main_deep_agent_graph(
-        use_real_agent=_is_real_agent_enabled(),
         model_name=model_name,
-        recorder=recorder,
+        tools=orchestrator.worker_request_tools(),
         artifact_dir=resolve_deepagent_artifact_dir(_DEEPAGENT_ARTIFACT_DIR_ENV),
     )
-    # return build_main_agent_graph(
-    #     use_real_agent=_is_real_agent_enabled(),
-    #     model_name=model_name,
-    #     recorder=recorder,
-    # )
 
 
 def _build_worker_agent_graph() -> CompiledStateGraphLike:
