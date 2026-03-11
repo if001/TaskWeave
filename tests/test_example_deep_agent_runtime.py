@@ -19,7 +19,6 @@ from examples.deep_agent_runtime.web_tools import (
     web_list_and_store_artifact,
     web_page_and_store_artifact,
 )
-from examples.main import _build_worker_plan, _should_launch_worker
 
 
 class _SearchHandler(BaseHTTPRequestHandler):
@@ -69,11 +68,9 @@ class _SearchHandler(BaseHTTPRequestHandler):
 
 
 class DeepAgentRuntimeExampleTests(unittest.TestCase):
-    def test_example_runtime_completes_seeded_main_and_immediate_worker_tasks(
-        self,
-    ) -> None:
+    def test_example_runtime_completes_seeded_main_task(self) -> None:
         bundle = build_example_runtime()
-        seed_example_task(bundle.repository, topic="test topic", needs_worker=True)
+        seed_example_task(bundle.repository, topic="test topic")
 
         async def _run() -> None:
             while await bundle.runtime.tick(now_unix=0.0):
@@ -86,10 +83,7 @@ class DeepAgentRuntimeExampleTests(unittest.TestCase):
         assert main_task is not None
         self.assertEqual(main_task.status, "succeeded")
 
-        worker_task = bundle.repository.get(f"worker:{EXAMPLE_TASK_ID}:now:1")
-        self.assertIsNotNone(worker_task)
-        assert worker_task is not None
-        self.assertEqual(worker_task.status, "succeeded")
+        self.assertIsNone(bundle.repository.get(f"worker:{EXAMPLE_TASK_ID}:now:1"))
 
     def test_delayed_worker_runs_after_run_after(self) -> None:
         bundle = build_example_runtime()
@@ -99,7 +93,6 @@ class DeepAgentRuntimeExampleTests(unittest.TestCase):
                 kind=TASK_KIND_MAIN_RESEARCH,
                 payload={
                     "topic": "schedule later",
-                    "needs_worker": False,
                     "delayed_jobs": [{"query": "delayed query", "delay_seconds": 10.0}],
                     "periodic_jobs": [],
                 },
@@ -129,7 +122,6 @@ class DeepAgentRuntimeExampleTests(unittest.TestCase):
                 kind=TASK_KIND_MAIN_RESEARCH,
                 payload={
                     "topic": "periodic",
-                    "needs_worker": False,
                     "delayed_jobs": [],
                     "periodic_jobs": [
                         {
@@ -167,7 +159,7 @@ class DeepAgentRuntimeExampleTests(unittest.TestCase):
 
     def test_example_runtime_skips_worker_when_not_needed(self) -> None:
         bundle = build_example_runtime()
-        seed_example_task(bundle.repository, topic="no worker", needs_worker=False)
+        seed_example_task(bundle.repository, topic="no worker")
 
         async def _run() -> None:
             while await bundle.runtime.tick(now_unix=0.0):
@@ -176,17 +168,6 @@ class DeepAgentRuntimeExampleTests(unittest.TestCase):
         asyncio.run(_run())
 
         self.assertIsNone(bundle.repository.get(f"worker:{EXAMPLE_TASK_ID}:now:1"))
-
-    def test_terminal_worker_trigger_keywords(self) -> None:
-        self.assertTrue(_should_launch_worker("please research this"))
-        self.assertTrue(_should_launch_worker("この件を調査して"))
-        self.assertFalse(_should_launch_worker("hello"))
-
-    def test_terminal_worker_plan_includes_delayed_and_periodic(self) -> None:
-        plan = _build_worker_plan("please research this later with periodic follow-up")
-        self.assertTrue(bool(plan["needs_worker"]))
-        self.assertEqual(len(plan["delayed_jobs"]), 1)
-        self.assertEqual(len(plan["periodic_jobs"]), 1)
 
     def test_web_tools_store_artifact_files(self) -> None:
         import os

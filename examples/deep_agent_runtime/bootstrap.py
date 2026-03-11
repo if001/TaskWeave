@@ -81,13 +81,11 @@ def build_example_runtime(
     )
 
 
-def seed_example_task(
-    repository: TaskRepository, topic: str, needs_worker: bool = True
-) -> Task:
+def seed_example_task(repository: TaskRepository, topic: str) -> Task:
     task = Task(
         id=EXAMPLE_TASK_ID,
         kind=TASK_KIND_MAIN_RESEARCH,
-        payload={"topic": topic, "needs_worker": needs_worker},
+        payload={"topic": topic},
         metadata={"enqueued_at_unix": 0.0},
     )
     repository.enqueue(task)

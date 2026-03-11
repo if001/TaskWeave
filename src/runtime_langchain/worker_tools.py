@@ -10,7 +10,6 @@ from runtime_core.agent_types import (
     MainAgentOutput,
     MainAgentRawResult,
     PeriodicWorkerPlan,
-    normalize_main_input,
 )
 from runtime_core.logging_utils import get_logger
 from runtime_core.task_flow import to_delayed_plans, to_periodic_plans
@@ -64,9 +63,6 @@ class WorkerLaunchRecorder:
         drained = MainAgentRawResult(
             agent_output=MainAgentOutput(
                 final_output="worker requests collected",
-                needs_worker=False,
-                delayed_count=0,
-                periodic_count=0,
             ),
             immediate_queries=list(self.immediate_queries),
             delayed_queries=list(self.delayed_queries),
@@ -81,16 +77,12 @@ class WorkerLaunchRecorder:
 def collect_worker_requests(
     recorder: WorkerLaunchRecorder, request: MainAgentInput
 ) -> MainAgentRawResult:
-    normalized = normalize_main_input(request)
-    topic = normalized["topic"]
-    needs_worker = normalized["needs_worker"]
-    if needs_worker:
-        recorder.request_worker_now(topic)
+    topic = str(request.get("topic", "")).strip()
 
-    for delayed in to_delayed_plans(normalized["delayed_jobs"]):
+    for delayed in to_delayed_plans(request.get("delayed_jobs", [])):
         recorder.request_worker_at(delayed["query"], delayed["delay_seconds"])
 
-    for periodic in to_periodic_plans(normalized["periodic_jobs"]):
+    for periodic in to_periodic_plans(request.get("periodic_jobs", [])):
         recorder.request_worker_periodic(
             periodic["query"],
             periodic["start_in_seconds"],
@@ -101,9 +93,6 @@ def collect_worker_requests(
     drained = recorder.drain()
     drained["agent_output"] = MainAgentOutput(
         final_output=f"[mock main-agent] accepted: {topic}",
-        needs_worker=needs_worker,
-        delayed_count=len(drained["delayed_queries"]),
-        periodic_count=len(drained["periodic_queries"]),
     )
     return drained
 

@@ -16,6 +16,7 @@ from runtime_core.runner import RunnerPolicy, RuntimeRunner
 
 from examples.deep_agent_runtime.bootstrap import (
     TASK_KIND_MAIN_RESEARCH,
+    TASK_KIND_NOTIFICATION,
     TASK_KIND_WORKER_RESEARCH,
     build_example_runtime,
 )
@@ -101,7 +102,6 @@ class MentionTaskBuilder:
             kind=TASK_KIND_MAIN_RESEARCH,
             payload={
                 "topic": self.build_topic(message),
-                "needs_worker": True,
                 "delayed_jobs": [],
                 "periodic_jobs": [],
             },
@@ -128,7 +128,7 @@ class TaskWeaveDiscordBridge:
             policy=RunnerPolicy(
                 max_concurrency=2,
                 main_kinds=[TASK_KIND_MAIN_RESEARCH],
-                worker_kinds=[TASK_KIND_WORKER_RESEARCH],
+                worker_kinds=[TASK_KIND_WORKER_RESEARCH, TASK_KIND_NOTIFICATION],
             ),
         )
         self._turn = 1

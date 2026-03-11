@@ -30,11 +30,11 @@ from runtime_langchain.runnable_handler import (
 from runtime_langchain.worker_tools import WorkerLaunchRecorder, collect_worker_requests
 
 
-def _default_main_prompt(topic: str, needs_worker: bool) -> str:
+def _default_main_prompt(topic: str) -> str:
     return (
         "Handle this user request. "
         "Use worker tools for heavy deep research work if needed. "
-        f"topic={topic}, needs_worker={needs_worker}"
+        f"topic={topic}"
     )
 
 
@@ -52,7 +52,7 @@ class MainResearchTaskHandler(RunnableTaskHandler):
         cls,
         runnable_factory: Callable[[WorkerLaunchRecorder], CompiledStateGraphLike],
         flow: TaskFlowConfig,
-        prompt_builder: Callable[[str, bool], str] | None = None,
+        prompt_builder: Callable[[str], str] | None = None,
         config_mapper: ConfigMapper[AgentConfig] | None = None,
         before_invoke: BeforeInvoke[MainAgentInput] | None = None,
         after_invoke: AfterInvoke[object] | None = None,
@@ -74,7 +74,7 @@ class MainResearchTaskHandler(RunnableTaskHandler):
         runnable: AsyncRunnable[MainAgentInput, object, AgentConfig],
         flow: TaskFlowConfig,
         recorder: WorkerLaunchRecorder,
-        prompt_builder: Callable[[str, bool], str] | None = None,
+        prompt_builder: Callable[[str], str] | None = None,
         config_mapper: ConfigMapper[AgentConfig] | None = None,
         before_invoke: BeforeInvoke[MainAgentInput] | None = None,
         after_invoke: AfterInvoke[object] | None = None,
@@ -83,13 +83,11 @@ class MainResearchTaskHandler(RunnableTaskHandler):
 
         def _input(ctx: TaskContext) -> MainAgentInput:
             topic = str(ctx.task.payload["topic"])
-            needs_worker = bool(ctx.task.payload.get("needs_worker", False))
-            prompt = prompt_builder(topic, needs_worker)
+            prompt = prompt_builder(topic)
 
             return MainAgentInput(
                 messages=[{"role": "user", "content": prompt}],
                 topic=topic,
-                needs_worker=needs_worker,
                 delayed_jobs=to_delayed_plans(ctx.task.payload.get("delayed_jobs", [])),
                 periodic_jobs=to_periodic_plans(
                     ctx.task.payload.get("periodic_jobs", [])
@@ -208,26 +206,11 @@ def _normalize_main_raw(
 def _normalize_main_output(raw: object) -> MainAgentOutput:
     if isinstance(raw, dict):
         final_output = str(raw.get("final_output", "")).strip()
-        needs_worker = bool(raw.get("needs_worker", False))
-        try:
-            delayed_count = int(raw.get("delayed_count", 0))
-        except (TypeError, ValueError):
-            delayed_count = 0
-        try:
-            periodic_count = int(raw.get("periodic_count", 0))
-        except (TypeError, ValueError):
-            periodic_count = 0
         return MainAgentOutput(
             final_output=final_output,
-            needs_worker=needs_worker,
-            delayed_count=delayed_count,
-            periodic_count=periodic_count,
         )
     return MainAgentOutput(
         final_output=str(raw).strip(),
-        needs_worker=False,
-        delayed_count=0,
-        periodic_count=0,
     )
 
 
