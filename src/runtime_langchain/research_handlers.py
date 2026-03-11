@@ -10,12 +10,11 @@ from runtime_core.agent_types import (
     WorkerAgentInput,
     WorkerAgentOutput,
 )
-from runtime_core.task_flow import (
-    TaskFlowConfig,
+from runtime_core.task_plans import to_delayed_plans, to_periodic_plans
+from runtime_core.task_results import (
+    TaskResultConfig,
     build_main_task_result,
     build_worker_task_result,
-    to_delayed_plans,
-    to_periodic_plans,
 )
 from runtime_core.models import TaskContext, TaskResult
 from runtime_langchain.runnable_handler import (
@@ -51,7 +50,7 @@ class MainResearchTaskHandler(RunnableTaskHandler):
     def for_langchain(
         cls,
         runnable_factory: Callable[[WorkerLaunchRecorder], CompiledStateGraphLike],
-        flow: TaskFlowConfig,
+        flow: TaskResultConfig,
         prompt_builder: Callable[[str], str] | None = None,
         config_mapper: ConfigMapper[AgentConfig] | None = None,
         before_invoke: BeforeInvoke[MainAgentInput] | None = None,
@@ -72,7 +71,7 @@ class MainResearchTaskHandler(RunnableTaskHandler):
     def __init__(
         self,
         runnable: AsyncRunnable[MainAgentInput, object, AgentConfig],
-        flow: TaskFlowConfig,
+        flow: TaskResultConfig,
         recorder: WorkerLaunchRecorder,
         prompt_builder: Callable[[str], str] | None = None,
         config_mapper: ConfigMapper[AgentConfig] | None = None,
@@ -102,6 +101,8 @@ class MainResearchTaskHandler(RunnableTaskHandler):
         def _output(ctx: TaskContext, raw: object) -> TaskResult:
             _ = ctx
             main_raw = _normalize_main_raw(raw, recorder)
+            print("raw: ", raw)
+            print("main_raw: ", main_raw)
             return build_main_task_result(ctx, main_raw, config=flow)
 
         def _after(ctx: TaskContext, raw: object) -> object:
@@ -139,7 +140,7 @@ class WorkerResearchTaskHandler(RunnableTaskHandler):
     def for_langchain(
         cls,
         runnable_factory: Callable[[], CompiledStateGraphLike],
-        flow: TaskFlowConfig,
+        flow: TaskResultConfig,
         prompt_builder: Callable[[str], str] | None = None,
         config_mapper: ConfigMapper[AgentConfig] | None = None,
         before_invoke: BeforeInvoke[WorkerAgentInput] | None = None,
@@ -158,7 +159,7 @@ class WorkerResearchTaskHandler(RunnableTaskHandler):
     def __init__(
         self,
         runnable: AsyncRunnable[WorkerAgentInput, object, AgentConfig],
-        flow: TaskFlowConfig,
+        flow: TaskResultConfig,
         prompt_builder: Callable[[str], str] | None = None,
         config_mapper: ConfigMapper[AgentConfig] | None = None,
         before_invoke: BeforeInvoke[WorkerAgentInput] | None = None,

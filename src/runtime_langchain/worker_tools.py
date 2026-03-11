@@ -12,7 +12,7 @@ from runtime_core.agent_types import (
     PeriodicWorkerPlan,
 )
 from runtime_core.logging_utils import get_logger
-from runtime_core.task_flow import to_delayed_plans, to_periodic_plans
+from runtime_core.task_plans import to_delayed_plans, to_periodic_plans
 
 logger = get_logger(__name__)
 

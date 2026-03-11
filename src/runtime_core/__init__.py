@@ -19,12 +19,11 @@ from runtime_core.agent_types import (
     normalize_main_input,
     normalize_worker_input,
 )
-from runtime_core.task_flow import (
-    TaskFlowConfig,
+from runtime_core.task_plans import to_delayed_plans, to_periodic_plans
+from runtime_core.task_results import (
+    TaskResultConfig,
     build_main_task_result,
     build_worker_task_result,
-    to_delayed_plans,
-    to_periodic_plans,
 )
 from runtime_core.repository import DedupePolicy, FileTaskRepository, InMemoryTaskRepository, TransitionPolicy
 from runtime_core.runtime import Runtime
@@ -62,7 +61,7 @@ __all__ = [
     "NotificationSenderBase",
     "NoopNotificationSender",
     "NotificationTaskHandler",
-    "TaskFlowConfig",
+    "TaskResultConfig",
     "build_main_task_result",
     "build_worker_task_result",
     "to_delayed_plans",
