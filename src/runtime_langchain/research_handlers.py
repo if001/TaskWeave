@@ -205,17 +205,48 @@ def _normalize_main_raw(
 
 def _normalize_main_output(raw: object) -> MainAgentOutput:
     if isinstance(raw, dict):
-        final_output = str(raw.get("final_output", "")).strip()
-        return MainAgentOutput(
-            final_output=final_output,
-        )
-    return MainAgentOutput(
-        final_output=str(raw).strip(),
-    )
+        if "final_output" in raw:
+            return MainAgentOutput(
+                final_output=str(raw.get("final_output", "")).strip(),
+            )
+        return MainAgentOutput(final_output=_extract_message_output(raw))
+    return MainAgentOutput(final_output=str(raw).strip())
 
 
 def _normalize_worker_output(raw: object) -> WorkerAgentOutput:
     if isinstance(raw, dict):
-        final_output = str(raw.get("final_output", "")).strip()
-        return WorkerAgentOutput(final_output=final_output)
+        if "final_output" in raw:
+            return WorkerAgentOutput(final_output=str(raw.get("final_output", "")).strip())
+        return WorkerAgentOutput(final_output=_extract_message_output(raw))
     return WorkerAgentOutput(final_output=str(raw).strip())
+
+
+def _extract_message_output(raw: dict[str, object]) -> str:
+    messages = raw.get("messages")
+    if not isinstance(messages, list):
+        return str(raw).strip()
+    for message in reversed(messages):
+        content = _extract_message_content(message)
+        if content:
+            return content
+    return ""
+
+
+def _extract_message_content(message: object) -> str:
+    if isinstance(message, dict):
+        role = str(message.get("role", "")).lower()
+        if role and role not in {"assistant", "ai"}:
+            return ""
+        return str(message.get("content", "")).strip()
+    if _is_ai_message(message):
+        content = getattr(message, "content", "")
+        return str(content).strip()
+    return ""
+
+
+def _is_ai_message(message: object) -> bool:
+    try:
+        from langchain_core.messages import AIMessage
+    except Exception:
+        return False
+    return isinstance(message, AIMessage)
