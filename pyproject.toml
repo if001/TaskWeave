@@ -7,18 +7,15 @@ requires-python = ">=3.11"
 dependencies = [
     "python-dotenv>=1.2.2",
     "pytest>=9.0.2",
-]
-
-
-[project.optional-dependencies]
-examples = [
     "deepagents==0.4.4",
     "langchain>=1.2.0",
     "langchain-openai>=0.2.0",
     "langgraph>=0.2.0",
+    "langgraph-checkpoint-sqlite",
     "discord-py>=2.6.4",
     "langchain-ollama>=1.0.1",
     "rich>=14.1.0",
+    "aiosqlite>=0.22.1",
 ]
 
 

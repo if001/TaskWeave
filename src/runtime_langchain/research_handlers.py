@@ -21,11 +21,7 @@ from .task_orchestrator import (
 
 
 def _default_main_prompt(topic: str) -> str:
-    return (
-        "Handle this user request. "
-        "Use worker tools for heavy deep research work if needed. "
-        f"topic={topic}"
-    )
+    return f"# user_input\n{topic}"
 
 
 def _default_worker_prompt(query: str) -> str:
@@ -33,7 +29,7 @@ def _default_worker_prompt(query: str) -> str:
 
 
 def _default_agent_config(_: TaskContext) -> RunnableConfig | None:
-    return None
+    return {"configurable": {"thread_id": "user-1"}}
 
 
 class MainResearchTaskHandler(RunnableTaskHandler):
@@ -116,9 +112,7 @@ class WorkerResearchTaskHandler(RunnableTaskHandler):
         )
 
 
-def _record_scheduled_workers(
-    ctx: TaskContext, recorder: WorkerLaunchRecorder
-) -> None:
+def _record_scheduled_workers(ctx: TaskContext, recorder: WorkerLaunchRecorder) -> None:
     for delayed in to_delayed_plans(ctx.task.payload.get("delayed_jobs", [])):
         recorder.request_worker_at(delayed["query"], delayed["delay_seconds"])
     for periodic in to_periodic_plans(ctx.task.payload.get("periodic_jobs", [])):
@@ -135,9 +129,7 @@ def _coerce_graph_output(raw: object) -> GraphInput:
         messages = raw.get("messages")
         if isinstance(messages, list):
             return GraphInput(messages=messages)
-    return GraphInput(
-        messages=[{"role": "assistant", "content": str(raw).strip()}]
-    )
+    return GraphInput(messages=[{"role": "assistant", "content": str(raw).strip()}])
 
 
 def _wrap_after_invoke(

@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 from tempfile import gettempdir
 from typing import Callable, TypeAlias, TypedDict
+from socket import timeout as SocketTimeout
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -56,16 +57,22 @@ def web_list_and_store_artifact(
         return _error_result("query must not be empty")
 
     request_payload: dict[str, JsonValue] = {"q": normalized_query, "k": max(k, 1)}
-    response = _post_json(url=f"{base_url}/list", payload=request_payload)
+    response, error = _post_json(url=f"{base_url}/list", payload=request_payload)
     if response is None:
-        return _error_result("web_list request failed")
+        return _error_result(error or "web_list request failed")
 
     artifact_path = _write_search_artifact(
-        artifact_payload=_ArtifactPayload(kind="web_list", request=request_payload, response=response),
+        artifact_payload=_ArtifactPayload(
+            kind="web_list", request=request_payload, response=response
+        ),
         artifact_dir=artifact_dir,
         artifact_writer=artifact_writer,
     )
-    return SearchToolResult(status="ok", artifact_path=artifact_path, summary=_summarize_list_payload(response))
+    return SearchToolResult(
+        status="ok",
+        artifact_path=artifact_path,
+        summary=_summarize_list_payload(response),
+    )
 
 
 def web_page_and_store_artifact(
@@ -78,24 +85,32 @@ def web_page_and_store_artifact(
     if not normalized_url:
         return _error_result("url must not be empty")
 
-    request_payload: dict[str, JsonValue] = {"url": normalized_url}
-    response = _post_json(url=f"{base_url}/page", payload=request_payload)
+    request_payload: dict[str, JsonValue] = {"urls": normalized_url}
+    response, error = _post_json(url=f"{base_url}/page", payload=request_payload)
     if response is None:
-        return _error_result("web_page request failed")
+        return _error_result(error or "web_page request failed")
 
     artifact_path = _write_search_artifact(
-        artifact_payload=_ArtifactPayload(kind="web_page", request=request_payload, response=response),
+        artifact_payload=_ArtifactPayload(
+            kind="web_page", request=request_payload, response=response
+        ),
         artifact_dir=artifact_dir,
         artifact_writer=artifact_writer,
     )
-    return SearchToolResult(status="ok", artifact_path=artifact_path, summary=_summarize_page_payload(response))
+    return SearchToolResult(
+        status="ok",
+        artifact_path=artifact_path,
+        summary=_summarize_page_payload(response),
+    )
 
 
 def _error_result(summary: str) -> SearchToolResult:
     return SearchToolResult(status="error", artifact_path="", summary=summary)
 
 
-def _post_json(url: str, payload: dict[str, JsonValue]) -> JsonValue | None:
+def _post_json(
+    url: str, payload: dict[str, JsonValue]
+) -> tuple[JsonValue | None, str | None]:
     request = Request(
         url=url,
         data=json.dumps(payload).encode("utf-8"),
@@ -105,9 +120,27 @@ def _post_json(url: str, payload: dict[str, JsonValue]) -> JsonValue | None:
     try:
         with urlopen(request, timeout=_WEB_SEARCH_TIMEOUT_SECONDS) as response:
             raw_text = response.read().decode("utf-8", errors="replace")
-    except (URLError, HTTPError, TimeoutError):
-        return None
-    return _to_json_or_text(raw_text)
+    except HTTPError as exc:
+        return None, _format_http_error(exc)
+    except (TimeoutError, SocketTimeout):
+        return None, "web request timed out"
+    except URLError as exc:
+        if isinstance(exc.reason, (TimeoutError, SocketTimeout)):
+            return None, "web request timed out"
+        return None, f"web request failed: {exc.reason}"
+    return _to_json_or_text(raw_text), None
+
+
+def _format_http_error(exc: HTTPError) -> str:
+    status = exc.code
+    body = exc.read().decode("utf-8", errors="replace")
+    summary = _summarize_payload(_to_json_or_text(body)) if body else ""
+    if 400 <= status < 500:
+        details = f": {summary}" if summary else ""
+        return f"web request failed (client error {status}){details}"
+    if 500 <= status < 600:
+        return f"web request failed (server error {status})"
+    return f"web request failed (status {status})"
 
 
 def _to_json_or_text(raw_text: str) -> JsonValue:
@@ -127,7 +160,12 @@ def _write_search_artifact(
     if artifact_writer is not None:
         return artifact_writer(payload_text)
 
-    base_dir = artifact_dir or Path(os.getenv(_WEB_SEARCH_DIR_ENV, str(Path(gettempdir()) / "taskweave_web_search_artifacts")))
+    base_dir = artifact_dir or Path(
+        os.getenv(
+            _WEB_SEARCH_DIR_ENV,
+            str(Path(gettempdir()) / "taskweave_web_search_artifacts"),
+        )
+    )
     base_dir.mkdir(parents=True, exist_ok=True)
     filename = f"{artifact_payload['kind']}_{int.from_bytes(os.urandom(6), 'big')}.json"
     artifact = base_dir / filename
@@ -175,7 +213,16 @@ def _summarize_page_payload(payload: JsonValue) -> str:
 
 
 def _summarize_payload(payload: JsonValue) -> str:
-    rendered = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)
+    rendered = (
+        payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)
+    )
     return " ".join(rendered.split())[:_WEB_SEARCH_SUMMARY_MAX_CHARS]
 
 
+if __name__ == "__main__":
+    url = "https://developers.openai.com/codex/learn/best-practices"
+    request_payload: dict[str, JsonValue] = {"urls": url}
+    base_url = "http://172.22.1.15:8000"
+    print("base_url", base_url)
+    response = _post_json(url=f"{base_url}/page", payload=request_payload)
+    print(response)

@@ -10,6 +10,7 @@ def get_ollama_client(model_name: str = "gpt-oss:20b") -> BaseChatModel:
         model=model_name,
         base_url=base_url,
         verbose=True,
+        reasoning=True,
         # client_kwargs={"headers": headers},
     )
     return client

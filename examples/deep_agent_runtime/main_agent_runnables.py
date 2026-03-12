@@ -4,13 +4,15 @@ from __future__ import annotations
 # pyright: reportUnknownParameterType=false
 
 import os
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from dotenv import load_dotenv
 
-from langchain.agents.middleware import before_model, AgentState
+from langchain.agents.middleware import after_model, before_model, AgentState
 from langgraph.runtime import Runtime
 from langgraph.graph.state import CompiledStateGraph
-
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langchain_core.tools import BaseTool
 
 from examples.deep_agent_runtime.web_tools import (
@@ -23,12 +25,10 @@ from examples.deep_agent_runtime.web_tools import (
 from examples.deep_agent_runtime.ollama_client import get_ollama_client
 from runtime_core.infra import get_logger
 from runtime_core.utils.time_utils import now_iso
+from runtime_langchain.task_orchestrator import GraphInput
 
 load_dotenv()
 logger = get_logger(__name__)
-
-
-from runtime_langchain.task_orchestrator import GraphInput
 
 
 def build_main_agent_graph(
@@ -66,17 +66,22 @@ PERSONA = (
 
 system_prompt = (
     "あなたは誠実で専門的なアシスタントです。\n"
-    "これまでのツール実行結果に基づき、ユーザーの質問に対する最終的な回答を作成してください。\n\n"
+    "ユーザーの入力に対して返答を行ってください。\n\n"
     f"現在時刻: {now_iso()}\n\n"
-    "## ツール利用\n"
-    "1) 十分な情報があり、最終回答を生成できる段階になるまでツールを繰り返し利用し情報を集め、加工を行うこと。\n"
-    "2) 追加情報がないと前進できない不明点がある場合、ツールは呼ばず、ユーザーへ質問を行ってください。\n"
-    "3) 複雑な調査や長い処理が必要で main のツール回数制限を超えそうな場合：\n"
-    "   - task.create_work でワーカーに依頼する（goalと成果物を具体的に指示）。\n"
-    "   - 定期実行/繰り返しは task.create_work_at / task.create_work_repeat を使う。\n"
+    "## 方針\n"
+    "- ユーザーの入力に対し達成すべきゴールを設定する\n"
+    "- 現在使えるツールを組み合わせ、どのような順番でツールを使えばゴールを達成できるか考える\n"
+    "- 十分な情報があり最終回答を生成できる段階になるまで、ツールを繰り返し利用し情報を集めること。\n"
+    "- 追加情報がないと前進できない不明点がある場合、ツールは呼ばず、ユーザーへ質問を行ってください。\n\n"
+    "## ツールの方針\n"
+    "- 複数回ツールを使うことができます。\n"
+    "- ファイルに保存した内容は、必要な部分だけ読んで要約・整理してユーザーに返す。\n"
+    "- 作業途中の整理は /artifact、長期的に残すべき内容は /memories を優先して使う。\n"
+    "- 複雑な調査や長い処理が必要な場合：\n"
+    "   - ワーカーに依頼する（goalと成果物を具体的に指示）。\n"
+    "   - 指定時間での実行はrequest_worker_at、定期実行/繰り返しは request_worker_periodicを使う。\n"
     "   - 依頼文は次の形式を必ず含める：\n"
-    "     目的/成功条件, 制約/対象範囲, 成果物の形式, 必須項目(結論・根拠・未解決), 不足時の扱い\n"
-    # f"4) ツールを使用して、ワークスペース[{work_space_dir}]以下のファイルやディレクトリにアクセスできます。\n\n"
+    "     目的/成功条件, 制約/対象範囲, 成果物の形式, 必須項目(結論・根拠・未解決), 不足時の扱い\n\n"
     "## 回答のガイドライン\n"
     "- 複数のツールから得られた断片的な情報を整理し、一貫性のある回答にまとめてください。\n"
     "- 根拠の提示: ツールで得られた具体的な事実（数値、日付、名称など）を引用してください。\n"
@@ -90,11 +95,12 @@ system_prompt = (
 )
 
 
-def build_main_deep_agent_graph(
+@asynccontextmanager
+async def build_main_deep_agent_graph(
     model_name: str,
     tools: list[BaseTool],
     artifact_dir: Path,
-) -> CompiledStateGraph[GraphInput, None, GraphInput, GraphInput]:
+) -> AsyncIterator[CompiledStateGraph[GraphInput, None, GraphInput, GraphInput]]:
     from deepagents import create_deep_agent
     from deepagents.backends import (
         CompositeBackend,
@@ -103,10 +109,12 @@ def build_main_deep_agent_graph(
         StoreBackend,
     )
     from langchain.tools import ToolRuntime, tool
-    from langgraph.store.memory import InMemoryStore
+    from langgraph.store.sqlite import AsyncSqliteStore
 
     base_url = resolve_simple_client_base_url()
-    memory_store = InMemoryStore()
+    store_path = artifact_dir / "langgraph_store.sqlite"
+    checkpoint_path = artifact_dir / "langgraph_checkpoints.sqlite"
+
     artifacts_backend = FilesystemBackend(root_dir=str(artifact_dir), virtual_mode=True)
 
     def make_backend(runtime: ToolRuntime) -> CompositeBackend:
@@ -122,6 +130,7 @@ def build_main_deep_agent_graph(
         filename = f"artifact_{int.from_bytes(os.urandom(6), 'big')}.json"
         write_result = artifacts_backend.write(f"/{filename}", payload_text)
         if write_result.error:
+            logger.error(f"write artifact error {write_result.error}")
             raise RuntimeError(write_result.error)
         written_path = write_result.path or f"/{filename}"
         return f"/artifacts{written_path}"
@@ -140,6 +149,7 @@ def build_main_deep_agent_graph(
             Writes the full response payload to /artifacts via the backend.
         """
         if base_url is None:
+            logger.error("base url not set")
             return missing_search_service_result()
         return web_list_and_store_artifact(
             query=query,
@@ -161,6 +171,7 @@ def build_main_deep_agent_graph(
             Writes the full page markdown to /artifacts via the backend.
         """
         if base_url is None:
+            logger.error("base url not set")
             return missing_search_service_result()
         return web_page_and_store_artifact(
             url=url,
@@ -168,14 +179,28 @@ def build_main_deep_agent_graph(
             artifact_writer=write_artifact_via_backend,
         )
 
-    model = get_ollama_client(model_name=model_name)
-    all_tools = [*tools, web_list, web_page]
-    agent = create_deep_agent(
-        model=model,
-        tools=all_tools,
-        system_prompt=system_prompt,
-        backend=make_backend,
-        store=memory_store,
-    )
+    @after_model(can_jump_to=["end"])
+    def check_message(state: AgentState, runtime: Runtime) -> dict[str, str]:
+        _ = runtime
+        m = state["messages"]
+        logger.info(f"last message {m[-5:]}\n\n")
+        return {}
 
-    return agent  # pyright: ignore[reportReturnType]
+    async with (
+        AsyncSqliteSaver.from_conn_string(str(checkpoint_path)) as checkpointer,
+        AsyncSqliteStore.from_conn_string(str(store_path)) as memory_store,
+    ):
+        await memory_store.setup()
+        model = get_ollama_client(model_name=model_name)
+        all_tools = [*tools, web_list, web_page]
+        print("all tools", all_tools)
+        agent = create_deep_agent(
+            model=model,
+            tools=all_tools,
+            system_prompt=system_prompt,
+            backend=make_backend,
+            store=memory_store,
+            checkpointer=checkpointer,
+            middleware=[check_message],
+        )
+        yield agent

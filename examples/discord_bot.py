@@ -15,6 +15,7 @@ from runtime_core.types import Task
 from runtime_core.runtime import RunnerPolicy, RuntimeRunner
 
 from examples.deep_agent_runtime.bootstrap import (
+    ExampleRuntimeBundle,
     TASK_KIND_MAIN_RESEARCH,
     TASK_KIND_NOTIFICATION,
     TASK_KIND_WORKER_RESEARCH,
@@ -122,23 +123,16 @@ class TaskWeaveDiscordBridge:
     def __init__(self, client: discord.Client) -> None:
         self._client = client
         self._typing_controller = TypingTaskController()
-        self._bundle = build_example_runtime(
-            notification_sender=DiscordNotificationSender(
-                client, typing_controller=self._typing_controller
-            )
-        )
-        self._runner = RuntimeRunner(
-            runtime=self._bundle.runtime,
-            policy=RunnerPolicy(
-                max_concurrency=2,
-                main_kinds=[TASK_KIND_MAIN_RESEARCH],
-                worker_kinds=[TASK_KIND_WORKER_RESEARCH, TASK_KIND_NOTIFICATION],
-            ),
-        )
+        self._runtime_context: contextlib.AbstractAsyncContextManager[
+            ExampleRuntimeBundle
+        ] | None = None
+        self._bundle: ExampleRuntimeBundle | None = None
+        self._runner: RuntimeRunner | None = None
         self._turn = 1
         self._runtime_worker: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
+        await self._ensure_runtime()
         if self._runtime_worker is None:
             self._runtime_worker = asyncio.create_task(self._runtime_loop())
             logger.info("Runtime loop started")
@@ -151,8 +145,14 @@ class TaskWeaveDiscordBridge:
         with contextlib.suppress(asyncio.CancelledError):
             await self._runtime_worker
         logger.info("Runtime loop stopped")
+        if self._runtime_context is not None:
+            await self._runtime_context.__aexit__(None, None, None)
+            self._runtime_context = None
+            self._bundle = None
+            self._runner = None
 
     async def on_mention(self, message: discord.Message) -> None:
+        await self._ensure_runtime()
         user = self._client.user
         if user is None:
             logger.error("Client user is unavailable; mention ignored")
@@ -166,6 +166,9 @@ class TaskWeaveDiscordBridge:
         builder = MentionTaskBuilder(bot_user_id=user.id)
         task = builder.build_task(self._turn, message)
         self._typing_controller.start(task.id, message.channel)
+        if self._bundle is None:
+            logger.error("Runtime bundle is unavailable; task not enqueued")
+            return
         self._bundle.repository.enqueue(task)
         logger.info(
             "Task enqueued: id=%s channel=%s author=%s",
@@ -177,8 +180,29 @@ class TaskWeaveDiscordBridge:
 
     async def _runtime_loop(self) -> None:
         while True:
+            if self._runner is None:
+                await asyncio.sleep(_IDLE_SLEEP_SECONDS)
+                continue
             if not await self._runner.run_once():
                 await asyncio.sleep(_IDLE_SLEEP_SECONDS)
+
+    async def _ensure_runtime(self) -> None:
+        if self._bundle is not None and self._runner is not None:
+            return
+        self._runtime_context = build_example_runtime(
+            notification_sender=DiscordNotificationSender(
+                self._client, typing_controller=self._typing_controller
+            )
+        )
+        self._bundle = await self._runtime_context.__aenter__()
+        self._runner = RuntimeRunner(
+            runtime=self._bundle.runtime,
+            policy=RunnerPolicy(
+                max_concurrency=2,
+                main_kinds=[TASK_KIND_MAIN_RESEARCH],
+                worker_kinds=[TASK_KIND_WORKER_RESEARCH, TASK_KIND_NOTIFICATION],
+            ),
+        )
 
 
 def _require_token() -> str:

@@ -18,48 +18,48 @@ _USER_ID = "terminal-user-1"
 
 
 async def run() -> None:
-    bundle = build_example_runtime()
-    runner = RuntimeRunner(
-        runtime=bundle.runtime,
-        policy=RunnerPolicy(
-            max_concurrency=2,
-            main_kinds=[TASK_KIND_MAIN_RESEARCH],
-            worker_kinds=[TASK_KIND_WORKER_RESEARCH, TASK_KIND_NOTIFICATION],
-        ),
-    )
-    turn = 1
-
-    print("Deep Agent Runtime Chat (type 'exit' to quit)")
-    while True:
-        user_text = input("you> ").strip()
-        if not user_text:
-            continue
-        if user_text.lower() in _EXIT_COMMANDS:
-            print("bye")
-            break
-
-        current_unix = time()
-        task_id = f"chat:main:{turn}_{uuid.uuid4()}"
-        bundle.repository.enqueue(
-            Task(
-                id=task_id,
-                kind=TASK_KIND_MAIN_RESEARCH,
-                payload={
-                    "topic": user_text,
-                    "delayed_jobs": [],
-                    "periodic_jobs": [],
-                },
-                metadata={
-                    "user_id": _USER_ID,
-                    "turn": turn,
-                    "enqueued_at_unix": current_unix,
-                },
-            )
+    async with build_example_runtime() as bundle:
+        runner = RuntimeRunner(
+            runtime=bundle.runtime,
+            policy=RunnerPolicy(
+                max_concurrency=2,
+                main_kinds=[TASK_KIND_MAIN_RESEARCH],
+                worker_kinds=[TASK_KIND_WORKER_RESEARCH, TASK_KIND_NOTIFICATION],
+            ),
         )
+        turn = 1
 
-        await _run_until_idle(runner)
-        _print_turn_result(bundle.repository, task_id=task_id)
-        turn += 1
+        print("Deep Agent Runtime Chat (type 'exit' to quit)")
+        while True:
+            user_text = input("you> ").strip()
+            if not user_text:
+                continue
+            if user_text.lower() in _EXIT_COMMANDS:
+                print("bye")
+                break
+
+            current_unix = time()
+            task_id = f"chat:main:{turn}_{uuid.uuid4()}"
+            bundle.repository.enqueue(
+                Task(
+                    id=task_id,
+                    kind=TASK_KIND_MAIN_RESEARCH,
+                    payload={
+                        "topic": user_text,
+                        "delayed_jobs": [],
+                        "periodic_jobs": [],
+                    },
+                    metadata={
+                        "user_id": _USER_ID,
+                        "turn": turn,
+                        "enqueued_at_unix": current_unix,
+                    },
+                )
+            )
+
+            await _run_until_idle(runner)
+            _print_turn_result(bundle.repository, task_id=task_id)
+            turn += 1
 
 
 def main() -> None:
