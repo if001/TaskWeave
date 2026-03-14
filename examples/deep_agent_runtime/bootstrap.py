@@ -5,6 +5,7 @@ import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from langfuse.langchain import CallbackHandler
 
 from runtime_core.types import Task
 from runtime_core.runtime import (
@@ -15,7 +16,8 @@ from runtime_core.runtime import (
     TaskRepository,
     TaskScheduler,
 )
-from langgraph.graph.state import CompiledStateGraph
+from langgraph.graph.state import CompiledStateGraph, Runnable, RunnableConfig
+from runtime_core.types.models import TaskContext
 from runtime_langchain.task_orchestrator import GraphInput
 from runtime_core.notifications import NotificationSender
 from runtime_core.tasks import TaskResultConfig
@@ -36,6 +38,11 @@ _BACKEND_ENV = "REAL_AGENT_BACKEND"
 _BACKEND_LANGCHAIN = "langchain"
 _BACKEND_DEEPAGENT = "deepagent"
 _DEEPAGENT_ARTIFACT_DIR_ENV = "DEEPAGENT_ARTIFACT_DIR"
+
+langfuse_secret_key = os.getenv("LANGFUSE_SECRET_KEY", "")
+langfuse_public_key = os.getenv("LANGFUSE_PUBLIC_KEY", "")
+langfuse_base_url = os.getenv("LANGFUSE_BASE_URL", "")
+langfuse_handler = CallbackHandler()
 
 
 @dataclass(slots=True)
@@ -66,11 +73,19 @@ async def build_example_runtime(
             notification_task_kind=TASK_KIND_NOTIFICATION,
         ),
     )
+
+    def config_mapper(_: TaskContext) -> RunnableConfig:
+        return {
+            "configurable": {"thread_id": "user-1"},
+            "callbacks": [langfuse_handler],
+        }
+
     async with _build_main_agent_graph(builder) as main_graph:
         builder.register_main(
             registry,
             kind=TASK_KIND_MAIN_RESEARCH,
             runnable=main_graph,
+            config_mapper=config_mapper,
         )
         builder.register_worker(
             registry,
@@ -125,7 +140,9 @@ async def _build_main_agent_graph(
         yield graph
 
 
-def _build_worker_agent_graph() -> CompiledStateGraph[GraphInput, None, GraphInput, GraphInput]:
+def _build_worker_agent_graph() -> CompiledStateGraph[
+    GraphInput, None, GraphInput, GraphInput
+]:
     model_name = os.getenv(_MODEL_ENV, DEFAULT_MODEL_NAME)
     return build_worker_agent_graph(
         use_real_agent=_is_real_agent_enabled(),

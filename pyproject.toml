@@ -16,6 +16,7 @@ dependencies = [
     "langchain-ollama>=1.0.1",
     "rich>=14.1.0",
     "aiosqlite>=0.22.1",
+    "langfuse>=4.0.0",
 ]
 
 

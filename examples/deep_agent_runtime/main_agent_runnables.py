@@ -29,6 +29,7 @@ from runtime_langchain.task_orchestrator import GraphInput
 
 load_dotenv()
 logger = get_logger(__name__)
+_SKILLS_DIR_ENV = "DEEPAGENT_SKILLS_DIR"
 
 
 def build_main_agent_graph(
@@ -68,15 +69,14 @@ system_prompt = (
     "あなたは誠実で専門的なアシスタントです。\n"
     "ユーザーの入力に対して返答を行ってください。\n\n"
     f"現在時刻: {now_iso()}\n\n"
-    "## 方針\n"
-    "- ユーザーの入力に対し達成すべきゴールを設定する\n"
-    "- 現在使えるツールを組み合わせ、どのような順番でツールを使えばゴールを達成できるか考える\n"
-    "- 十分な情報があり最終回答を生成できる段階になるまで、ツールを繰り返し利用し情報を集めること。\n"
-    "- 追加情報がないと前進できない不明点がある場合、ツールは呼ばず、ユーザーへ質問を行ってください。\n\n"
     "## ツールの方針\n"
     "- 複数回ツールを使うことができます。\n"
     "- ファイルに保存した内容は、必要な部分だけ読んで要約・整理してユーザーに返す。\n"
-    "- 作業途中の整理は /artifact、長期的に残すべき内容は /memories を優先して使う。\n"
+    "- 作業途中の整理は /artifacts、長期的に残すべき内容は /memories、作業途中の比較表や要約下書きは /tmp を優先して使う。\n"
+    "- /memories/ は用途別に以下へ保存する:\n"
+    "  - /memories/profile/: ユーザーの安定した属性や好み\n"
+    "  - /memories/topics/: よく話すテーマ、関心領域、継続中の話題\n"
+    "  - /memories/tasks/: 継続タスク、未完了事項\n"
     "- 複雑な調査や長い処理が必要な場合：\n"
     "   - ワーカーに依頼する（goalと成果物を具体的に指示）。\n"
     "   - 指定時間での実行はrequest_worker_at、定期実行/繰り返しは request_worker_periodicを使う。\n"
@@ -99,7 +99,8 @@ system_prompt = (
 async def build_main_deep_agent_graph(
     model_name: str,
     tools: list[BaseTool],
-    artifact_dir: Path,
+    workspace_dir: Path,
+    skills_dir: Path | None = None,
 ) -> AsyncIterator[CompiledStateGraph[GraphInput, None, GraphInput, GraphInput]]:
     from deepagents import create_deep_agent
     from deepagents.backends import (
@@ -112,18 +113,31 @@ async def build_main_deep_agent_graph(
     from langgraph.store.sqlite import AsyncSqliteStore
 
     base_url = resolve_simple_client_base_url()
-    store_path = artifact_dir / "langgraph_store.sqlite"
-    checkpoint_path = artifact_dir / "langgraph_checkpoints.sqlite"
-
-    artifacts_backend = FilesystemBackend(root_dir=str(artifact_dir), virtual_mode=True)
+    store_path = workspace_dir / "langgraph_store.sqlite"
+    checkpoint_path = workspace_dir / "langgraph_checkpoints.sqlite"
+    artifact_save_dir = workspace_dir / "artifacts"
+    artifacts_backend = FilesystemBackend(
+        root_dir=str(artifact_save_dir), virtual_mode=True
+    )
+    resolved_skills_dir = skills_dir or _resolve_skills_dir()
+    skills_backend = (
+        FilesystemBackend(root_dir=str(resolved_skills_dir), virtual_mode=True)
+        if resolved_skills_dir
+        else None
+    )
+    skills_paths = ["/skills/"] if skills_backend else None
 
     def make_backend(runtime: ToolRuntime) -> CompositeBackend:
+        routes = {
+            "/memories/": StoreBackend(runtime),
+            "/artifacts/": artifacts_backend,
+            "/tmp/": StateBackend(runtime),
+        }
+        if skills_backend is not None:
+            routes["/skills/"] = skills_backend
         return CompositeBackend(
             default=StateBackend(runtime),
-            routes={
-                "/memories/": StoreBackend(runtime),
-                "/artifacts/": artifacts_backend,
-            },
+            routes=routes,
         )
 
     def write_artifact_via_backend(payload_text: str) -> str:
@@ -193,7 +207,6 @@ async def build_main_deep_agent_graph(
         await memory_store.setup()
         model = get_ollama_client(model_name=model_name)
         all_tools = [*tools, web_list, web_page]
-        print("all tools", all_tools)
         agent = create_deep_agent(
             model=model,
             tools=all_tools,
@@ -201,6 +214,20 @@ async def build_main_deep_agent_graph(
             backend=make_backend,
             store=memory_store,
             checkpointer=checkpointer,
+            skills=skills_paths,
             middleware=[check_message],
         )
         yield agent
+
+
+def _resolve_skills_dir() -> Path | None:
+    configured = os.getenv(_SKILLS_DIR_ENV, "").strip()
+    if not configured:
+        return None
+    skills_dir = Path(configured)
+    if not skills_dir.exists():
+        return None
+    for skill_file in skills_dir.rglob("SKILL.md"):
+        if skill_file.is_file():
+            return skills_dir
+    return None
