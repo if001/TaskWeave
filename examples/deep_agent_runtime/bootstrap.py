@@ -135,7 +135,7 @@ async def _build_main_agent_graph(
     async with build_main_deep_agent_graph(
         model_name=model_name,
         tools=builder.worker_tools(),
-        artifact_dir=resolve_deepagent_artifact_dir(_DEEPAGENT_ARTIFACT_DIR_ENV),
+        workspace_dir=resolve_deepagent_artifact_dir(_DEEPAGENT_ARTIFACT_DIR_ENV),
     ) as graph:
         yield graph
 
