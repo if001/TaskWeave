@@ -74,3 +74,27 @@ python -m examples.deep_agent_runtime.discord_bot
 - メンション受信から main 応答を返すまで、Bot は Discord 上で typing 表示を継続する
 - main 処理の完了時に `notification` task が生成され、main の結果が Discord に送信される
 - worker が起動した場合、worker 完了時にも `notification` task が生成され、完了メッセージが Discord に送信される
+
+
+## Discord URL 要約・タグ付けサンプル
+
+`examples/discord_url_digest_bot.py` は、指定チャンネル（または全チャンネル）に投稿された URL を取得し、
+`SIMPLE_CLIENT_BASE_URL` で指定した web_tools 互換エンドポイント（`POST /page`）からページ本文を取得し、
+Ollama で要約・タグ付けしたうえで、結果を deepagent の `FilesystemBackend` で
+`/artifact/articles/...` に JSON 保存するサンプルです。
+
+### 使い方
+
+```bash
+export DISCORD_BOT_TOKEN="<your-token>"
+# 必須: web_tools と同じページ取得API
+export SIMPLE_CLIENT_BASE_URL="http://127.0.0.1:8000"
+# 任意: 監視対象のチャンネルを1つに限定
+export DISCORD_WATCH_CHANNEL_ID="123456789012345678"
+# 任意: 保存先ルート
+export DEEPAGENT_ARTIFACT_DIR="./.state/deepagent_artifacts"
+python -m examples.discord_url_digest_bot
+```
+
+保存レコードには要約・タグ・本文・作成日時に加え、
+将来の `examples` エージェントが「次に読む記事選定」「興味方向性の更新」に使えるメタデータが含まれます。
