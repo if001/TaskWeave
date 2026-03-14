@@ -1,5 +1,5 @@
 ---
-name: web research pipline
+name: web-research
 description: web pageの要約や調査のpipeline
 ---
 

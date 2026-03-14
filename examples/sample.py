@@ -60,7 +60,7 @@ async def _run() -> None:
     async with build_main_deep_agent_graph(
         model_name=model_name,
         tools=[],
-        artifact_dir=artifact_dir,
+        workspace_dir=artifact_dir,
     ) as agent:
         print("agent ready. type 'exit' to quit.")
         while True:

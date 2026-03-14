@@ -3,16 +3,18 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+from pathlib import Path
 from dataclasses import dataclass, field
 from time import time
 import uuid
+import sys
 
 import discord
 from dotenv import load_dotenv
 
 from runtime_core.infra import get_logger
 from runtime_core.types import Task
-from runtime_core.runtime import RunnerPolicy, RuntimeRunner
+from runtime_core.runtime import FileTaskRepository, RunnerPolicy, RuntimeRunner
 
 from examples.deep_agent_runtime.bootstrap import (
     ExampleRuntimeBundle,
@@ -24,7 +26,10 @@ from examples.deep_agent_runtime.bootstrap import (
 from runtime_core.notifications import NotificationPayload, NotificationSenderBase
 
 load_dotenv()
-_DISCORD_BOT_TOKEN = "DISCORD_BOT_TOKEN"
+args = sys.argv
+bot_key = args[-1]
+_DISCORD_BOT_TOKEN = bot_key + "_DISCORD_TOKEN" if bot_key else "DISCORD_BOT_TOKEN"
+_AGENT_ID_ENV = bot_key + "_AGENT_ID" if bot_key else "AGENT_ID"
 _EXIT_NOTE = "Discord bot started. Mention this bot in a channel to create tasks."
 _IDLE_SLEEP_SECONDS = 0.5
 _TYPING_REFRESH_SECONDS = 8.0
@@ -100,32 +105,16 @@ class MentionTaskBuilder:
         topic = topic.replace(f"<@!{self.bot_user_id}>", "").strip()
         return topic or _FALLBACK_PROMPT
 
-    def build_task(self, turn: int, message: discord.Message) -> Task:
-        task_id = f"discord:main:{turn}_{uuid.uuid4()}"
-        return Task(
-            id=task_id,
-            kind=TASK_KIND_MAIN_RESEARCH,
-            payload={
-                "topic": self.build_topic(message),
-                "delayed_jobs": [],
-                "periodic_jobs": [],
-            },
-            metadata={
-                "enqueued_at_unix": time(),
-                "discord_channel_id": message.channel.id,
-                "discord_requester_id": message.author.id,
-                "discord_request_task_id": task_id,
-            },
-        )
-
 
 class TaskWeaveDiscordBridge:
     def __init__(self, client: discord.Client) -> None:
         self._client = client
         self._typing_controller = TypingTaskController()
-        self._runtime_context: contextlib.AbstractAsyncContextManager[
-            ExampleRuntimeBundle
-        ] | None = None
+        self._agent_id = _resolve_agent_id()
+        self._workspace_dir = _resolve_workspace_dir(self._agent_id)
+        self._runtime_context: (
+            contextlib.AbstractAsyncContextManager[ExampleRuntimeBundle] | None
+        ) = None
         self._bundle: ExampleRuntimeBundle | None = None
         self._runner: RuntimeRunner | None = None
         self._turn = 1
@@ -135,7 +124,7 @@ class TaskWeaveDiscordBridge:
         await self._ensure_runtime()
         if self._runtime_worker is None:
             self._runtime_worker = asyncio.create_task(self._runtime_loop())
-            logger.info("Runtime loop started")
+            logger.info(f"Runtime loop started agent_id={self._agent_id}")
 
     async def stop(self) -> None:
         await self._typing_controller.stop_all()
@@ -164,7 +153,32 @@ class TaskWeaveDiscordBridge:
             return
 
         builder = MentionTaskBuilder(bot_user_id=user.id)
-        task = builder.build_task(self._turn, message)
+        speaker_type = "bot" if message.author.bot else "user"
+        speaker_id = str(message.author.id)
+        conversation_id = _conversation_id(message)
+        thread_id = f"{self._agent_id}:{conversation_id}"
+        task_id = f"discord:main:{self._turn}_{uuid.uuid4()}"
+        task = Task(
+            id=task_id,
+            kind=TASK_KIND_MAIN_RESEARCH,
+            payload={
+                "topic": builder.build_topic(message),
+                "delayed_jobs": [],
+                "periodic_jobs": [],
+            },
+            metadata={
+                "enqueued_at_unix": time(),
+                "discord_channel_id": message.channel.id,
+                "discord_requester_id": message.author.id,
+                "discord_request_task_id": task_id,
+                "agent_id": self._agent_id,
+                "conversation_id": conversation_id,
+                "speaker_id": speaker_id,
+                "speaker_type": speaker_type,
+                "thread_id": thread_id,
+                "user_id": speaker_id if speaker_type == "user" else None,
+            },
+        )
         self._typing_controller.start(task.id, message.channel)
         if self._bundle is None:
             logger.error("Runtime bundle is unavailable; task not enqueued")
@@ -192,7 +206,10 @@ class TaskWeaveDiscordBridge:
         self._runtime_context = build_example_runtime(
             notification_sender=DiscordNotificationSender(
                 self._client, typing_controller=self._typing_controller
-            )
+            ),
+            repository=FileTaskRepository(str(self._workspace_dir / "task.json")),
+            workspace_dir=self._workspace_dir,
+            agent_id=self._agent_id,
         )
         self._bundle = await self._runtime_context.__aenter__()
         self._runner = RuntimeRunner(
@@ -213,10 +230,44 @@ def _require_token() -> str:
     return token
 
 
+def _resolve_agent_id() -> str:
+    return os.getenv(_AGENT_ID_ENV, "agent").strip() or "agent"
+
+
+def _resolve_workspace_dir(agent_id: str) -> Path:
+    base = Path(".state") / agent_id
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
+# def _load_system_prompt() -> str | None:
+#     path = os.getenv(_AGENT_PROMPT_PATH_ENV, "").strip()
+#     if not path:
+#         return None
+#     prompt_path = Path(path)
+#     if not prompt_path.exists():
+#         logger.warning("System prompt file not found: %s", prompt_path)
+#         return None
+#     return prompt_path.read_text(encoding="utf-8")
+
+
+def _conversation_id(message: discord.Message) -> str:
+    if isinstance(message.channel, discord.Thread):
+        return str(message.channel.id)
+    if isinstance(message.channel, discord.TextChannel):
+        return str(message.channel.id)
+    return "unknown"
+
+
 async def _run() -> None:
     intents = discord.Intents.default()
     intents.message_content = True
-    client = discord.Client(intents=intents)
+    client = discord.Client(
+        intents=intents,
+        allowed_mentions=discord.AllowedMentions(
+            users=True, roles=True, everyone=False
+        ),
+    )
     bridge = TaskWeaveDiscordBridge(client=client)
 
     @client.event
@@ -226,7 +277,9 @@ async def _run() -> None:
 
     @client.event
     async def on_message(message: discord.Message) -> None:  # pyright: ignore[reportUnusedFunction]
-        if message.author.bot or client.user is None:
+        if client.user is None:
+            return
+        if message.author.bot and message.author.id == client.user.id:
             return
         if client.user in message.mentions:
             await bridge.on_mention(message)

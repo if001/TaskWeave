@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import os
 import uuid
+from pathlib import Path
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from langfuse.langchain import CallbackHandler
+from langfuse import get_client
 
+from runtime_core.infra.logging_utils import get_logger
 from runtime_core.types import Task
 from runtime_core.runtime import (
     FileTaskRepository,
@@ -17,6 +20,8 @@ from runtime_core.runtime import (
     TaskScheduler,
 )
 from langgraph.graph.state import CompiledStateGraph, Runnable, RunnableConfig
+
+
 from runtime_core.types.models import TaskContext
 from runtime_langchain.task_orchestrator import GraphInput
 from runtime_core.notifications import NotificationSender
@@ -42,7 +47,8 @@ _DEEPAGENT_ARTIFACT_DIR_ENV = "DEEPAGENT_ARTIFACT_DIR"
 langfuse_secret_key = os.getenv("LANGFUSE_SECRET_KEY", "")
 langfuse_public_key = os.getenv("LANGFUSE_PUBLIC_KEY", "")
 langfuse_base_url = os.getenv("LANGFUSE_BASE_URL", "")
-langfuse_handler = CallbackHandler()
+
+logger = get_logger(__name__)
 
 
 @dataclass(slots=True)
@@ -57,6 +63,8 @@ async def build_example_runtime(
     repository: TaskRepository | None = None,
     retry_policy: RetryPolicy | None = None,
     scheduler: TaskScheduler | None = None,
+    workspace_dir: Path | None = None,
+    agent_id: str = "default",
 ) -> AsyncIterator[ExampleRuntimeBundle]:
     repository = repository or FileTaskRepository("./.state/task.json")
     registry = HandlerRegistry()
@@ -73,14 +81,25 @@ async def build_example_runtime(
             notification_task_kind=TASK_KIND_NOTIFICATION,
         ),
     )
+    lf = get_client()
+    trace_id = lf.create_trace_id(seed=agent_id)
+    langfuse_handler = CallbackHandler(trace_context={"trace_id": f"{trace_id}"})
 
-    def config_mapper(_: TaskContext) -> RunnableConfig:
+    def config_mapper(ctx: TaskContext) -> RunnableConfig:
+        thread_id = ctx.task.metadata.get("thread_id")
+        configurable: dict[str, str] = {}
+        if isinstance(thread_id, str) and thread_id.strip():
+            configurable["thread_id"] = thread_id
         return {
-            "configurable": {"thread_id": "user-1"},
+            "configurable": configurable or {"thread_id": "user-1"},
             "callbacks": [langfuse_handler],
         }
 
-    async with _build_main_agent_graph(builder) as main_graph:
+    async with _build_main_agent_graph(
+        builder,
+        workspace_dir=workspace_dir,
+        agent_id=agent_id,
+    ) as main_graph:
         builder.register_main(
             registry,
             kind=TASK_KIND_MAIN_RESEARCH,
@@ -90,7 +109,7 @@ async def build_example_runtime(
         builder.register_worker(
             registry,
             kind=TASK_KIND_WORKER_RESEARCH,
-            runnable=_build_worker_agent_graph(),
+            runnable=_build_worker_agent_graph(workspace_dir=workspace_dir),
         )
         builder.register_notification(
             registry,
@@ -127,28 +146,38 @@ def build_example_task_id(*, turn: int) -> str:
 @asynccontextmanager
 async def _build_main_agent_graph(
     builder: ResearchRuntimeBuilder,
+    *,
+    workspace_dir: Path | None,
+    agent_id: str = "default",
 ) -> AsyncIterator[CompiledStateGraph[GraphInput, None, GraphInput, GraphInput]]:
     model_name = os.getenv(_MODEL_ENV, DEFAULT_MODEL_NAME)
+    resolved_workspace = workspace_dir or resolve_deepagent_artifact_dir(
+        _DEEPAGENT_ARTIFACT_DIR_ENV
+    )
     if not _is_real_agent_enabled():
         yield builder.mock_main_graph()
         return
     async with build_main_deep_agent_graph(
         model_name=model_name,
         tools=builder.worker_tools(),
-        workspace_dir=resolve_deepagent_artifact_dir(_DEEPAGENT_ARTIFACT_DIR_ENV),
+        workspace_dir=resolved_workspace,
+        agent_id=agent_id,
     ) as graph:
         yield graph
 
 
-def _build_worker_agent_graph() -> CompiledStateGraph[
-    GraphInput, None, GraphInput, GraphInput
-]:
+def _build_worker_agent_graph(
+    *, workspace_dir: Path | None
+) -> CompiledStateGraph[GraphInput, None, GraphInput, GraphInput]:
     model_name = os.getenv(_MODEL_ENV, DEFAULT_MODEL_NAME)
+    resolved_workspace = workspace_dir or resolve_deepagent_artifact_dir(
+        _DEEPAGENT_ARTIFACT_DIR_ENV
+    )
     return build_worker_agent_graph(
         use_real_agent=_is_real_agent_enabled(),
         backend=_resolve_real_agent_backend(),
         model_name=model_name,
-        artifact_dir=resolve_deepagent_artifact_dir(_DEEPAGENT_ARTIFACT_DIR_ENV),
+        artifact_dir=resolved_workspace,
     )
 
 

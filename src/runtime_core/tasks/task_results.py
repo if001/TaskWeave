@@ -40,7 +40,7 @@ def build_main_task_result(
         _new_notification_task(
             task_id=f"notification:{ctx.task.id}:main",
             parent_task_id=ctx.task.id,
-            message=f"main result: {render_output_message(raw['agent_output'])}",
+            message=f"{render_output_message(raw['agent_output'])}",
             metadata=metadata,
             notification_kind=config.notification_kind_main,
             notification_task_kind=config.notification_task_kind,

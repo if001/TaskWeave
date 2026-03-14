@@ -28,8 +28,11 @@ def _default_worker_prompt(query: str) -> str:
     return f"Perform deep research and summarize: {query}"
 
 
-def _default_agent_config(_: TaskContext) -> RunnableConfig | None:
-    return {"configurable": {"thread_id": "user-1"}}
+def _default_agent_config(ctx: TaskContext) -> RunnableConfig | None:
+    thread_id = ctx.task.metadata.get("thread_id")
+    if isinstance(thread_id, str) and thread_id.strip():
+        return {"configurable": {"thread_id": thread_id}}
+    return None
 
 
 class MainResearchTaskHandler(RunnableTaskHandler):

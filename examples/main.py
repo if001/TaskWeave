@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 from time import time
 import uuid
+import sys
+
 from runtime_core.types import Task
 from runtime_core.runtime import RunnerPolicy, RuntimeRunner, TaskRepository
 
@@ -15,6 +17,9 @@ from examples.deep_agent_runtime.bootstrap import (
 
 _EXIT_COMMANDS = {"exit", "quit", ":q"}
 _USER_ID = "terminal-user-1"
+
+args = sys.argv
+bot_key = args[-1]
 
 
 async def run() -> None:

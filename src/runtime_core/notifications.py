@@ -12,6 +12,11 @@ class NotificationPayload(TypedDict, total=False):
     discord_requester_id: int
     discord_request_task_id: str
     notification_kind: str
+    agent_id: str
+    conversation_id: str
+    speaker_id: str
+    speaker_type: str
+    bot_hops: int
 
 
 class NotificationSender(Protocol):
@@ -45,8 +50,13 @@ def notification_payload_from_task_payload(
     result: NotificationPayload = {"message": _normalize_text(payload.get("message", ""))}
     _set_int_if_present(result, "discord_channel_id", payload.get("discord_channel_id"))
     _set_int_if_present(result, "discord_requester_id", payload.get("discord_requester_id"))
+    _set_int_if_present(result, "bot_hops", payload.get("bot_hops"))
     _set_str_if_present(result, "discord_request_task_id", payload.get("discord_request_task_id"))
     _set_str_if_present(result, "notification_kind", payload.get("notification_kind"))
+    _set_str_if_present(result, "agent_id", payload.get("agent_id"))
+    _set_str_if_present(result, "conversation_id", payload.get("conversation_id"))
+    _set_str_if_present(result, "speaker_id", payload.get("speaker_id"))
+    _set_str_if_present(result, "speaker_type", payload.get("speaker_type"))
     return result
 
 
@@ -56,9 +66,14 @@ def extract_notification_metadata(metadata: dict[str, JsonValue]) -> Notificatio
     _set_int_if_present(
         result, "discord_requester_id", metadata.get("discord_requester_id")
     )
+    _set_int_if_present(result, "bot_hops", metadata.get("bot_hops"))
     _set_str_if_present(
         result, "discord_request_task_id", metadata.get("discord_request_task_id")
     )
+    _set_str_if_present(result, "agent_id", metadata.get("agent_id"))
+    _set_str_if_present(result, "conversation_id", metadata.get("conversation_id"))
+    _set_str_if_present(result, "speaker_id", metadata.get("speaker_id"))
+    _set_str_if_present(result, "speaker_type", metadata.get("speaker_type"))
     return result
 
 
