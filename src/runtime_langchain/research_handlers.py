@@ -49,7 +49,11 @@ class MainResearchTaskHandler(RunnableTaskHandler):
 
         def _input(ctx: TaskContext) -> GraphInput:
             topic = str(ctx.task.payload["topic"])
-            prompt = prompt_builder(topic)
+            speaker_type = str(ctx.task.metadata.get("speaker_type", "unknown"))
+            prompt = (
+                f"[speaker_type={speaker_type}]\n"
+                f"{prompt_builder(topic)}"
+            )
 
             return GraphInput(
                 messages=[{"role": "user", "content": prompt}],
@@ -96,8 +100,10 @@ class WorkerResearchTaskHandler(RunnableTaskHandler):
 
         def _input(ctx: TaskContext) -> GraphInput:
             query = str(ctx.task.payload["query"])
+            speaker_type = str(ctx.task.metadata.get("speaker_type", "unknown"))
+            prompt = f"[speaker_type={speaker_type}]\n{prompt_builder(query)}"
             return GraphInput(
-                messages=[{"role": "user", "content": prompt_builder(query)}],
+                messages=[{"role": "user", "content": prompt}],
             )
 
         def _output(ctx: TaskContext, raw: object) -> TaskResult:
