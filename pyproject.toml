@@ -17,6 +17,8 @@ dependencies = [
     "rich>=14.1.0",
     "aiosqlite>=0.22.1",
     "langfuse>=4.0.0",
+    "langchain-postgres>=0.0.12",
+    "psycopg2-binary>=2.9.11",
 ]
 
 
@@ -25,6 +27,8 @@ venvPath = "."
 venv = ".venv"
 typeCheckingMode = "basic"
 reportExplicitAny = "error"
+stubPath = "typings"
+reportMissingModuleSource = "none"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/runtime_core", "src/runtime_langchain"]

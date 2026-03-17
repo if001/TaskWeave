@@ -127,7 +127,9 @@ class UrlDigestService:
         raw = str(getattr(result, "content", "")).strip()
         payload = _parse_json(raw)
         summary = str(payload.get("summary", "")).strip()
-        tags_raw = payload.get("tags", [])
+        tags_raw = payload.get("tags")
+        if not isinstance(tags_raw, list):
+            tags_raw = []
         tags = [str(t).strip() for t in tags_raw if str(t).strip()]
         if not summary:
             summary = "要約の生成に失敗しました。"
