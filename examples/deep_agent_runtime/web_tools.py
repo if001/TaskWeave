@@ -4,33 +4,24 @@ import json
 import os
 from pathlib import Path
 from tempfile import gettempdir
-from typing import Callable, TypeAlias, TypedDict
+from typing import TypedDict
 from socket import timeout as SocketTimeout
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from examples.deep_agent_runtime.common import normalize_text
+from examples.deep_agent_runtime.artifact_tools import artifact_save
+from runtime_core.types import JsonValue, ensure_json_value
 
 _SIMPLE_CLIENT_BASE_URL_ENV = "SIMPLE_CLIENT_BASE_URL"
 _WEB_SEARCH_DIR_ENV = "EXAMPLE_WEB_SEARCH_DIR"
 _WEB_SEARCH_TIMEOUT_SECONDS = 15.0
 _WEB_SEARCH_SUMMARY_MAX_CHARS = 500
 
-JsonScalar: TypeAlias = str | int | float | bool | None
-JsonValue: TypeAlias = JsonScalar | dict[str, "JsonValue"] | list["JsonValue"]
-ArtifactWriter = Callable[[str], str]
-
-
 class SearchToolResult(TypedDict):
     status: str
     artifact_path: str
     summary: str
-
-
-class _ArtifactPayload(TypedDict):
-    kind: str
-    request: dict[str, JsonValue]
-    response: JsonValue
 
 
 def resolve_simple_client_base_url() -> str | None:
@@ -50,7 +41,6 @@ def web_list_and_store_artifact(
     k: int,
     base_url: str,
     artifact_dir: Path | None = None,
-    artifact_writer: ArtifactWriter | None = None,
 ) -> SearchToolResult:
     normalized_query = normalize_text(query)
     if not normalized_query:
@@ -61,17 +51,21 @@ def web_list_and_store_artifact(
     if response is None:
         return _error_result(error or "web_list request failed")
 
-    artifact_path = _write_search_artifact(
-        artifact_payload=_ArtifactPayload(
-            kind="web_list", request=request_payload, response=response
-        ),
-        artifact_dir=artifact_dir,
-        artifact_writer=artifact_writer,
+    artifact_root = _resolve_artifact_dir(artifact_dir)
+    raw_payload: dict[str, JsonValue] = {
+        "kind": "web_list",
+        "request": request_payload,
+        "response": response,
+    }
+    meta = artifact_save(
+        kind="web_list",
+        raw=raw_payload,
+        artifact_dir=artifact_root,
     )
     return SearchToolResult(
         status="ok",
-        artifact_path=artifact_path,
-        summary=_summarize_list_payload(response),
+        artifact_path=str(Path(meta["raw_path"]).with_name("meta.json")),
+        summary=meta["summary"],
     )
 
 
@@ -79,7 +73,6 @@ def web_page_and_store_artifact(
     url: str,
     base_url: str,
     artifact_dir: Path | None = None,
-    artifact_writer: ArtifactWriter | None = None,
 ) -> SearchToolResult:
     normalized_url = normalize_text(url)
     if not normalized_url:
@@ -90,17 +83,21 @@ def web_page_and_store_artifact(
     if response is None:
         return _error_result(error or "web_page request failed")
 
-    artifact_path = _write_search_artifact(
-        artifact_payload=_ArtifactPayload(
-            kind="web_page", request=request_payload, response=response
-        ),
-        artifact_dir=artifact_dir,
-        artifact_writer=artifact_writer,
+    artifact_root = _resolve_artifact_dir(artifact_dir)
+    raw_payload: dict[str, JsonValue] = {
+        "kind": "web_page",
+        "request": request_payload,
+        "response": response,
+    }
+    meta = artifact_save(
+        kind="web_page",
+        raw=raw_payload,
+        artifact_dir=artifact_root,
     )
     return SearchToolResult(
         status="ok",
-        artifact_path=artifact_path,
-        summary=_summarize_page_payload(response),
+        artifact_path=str(Path(meta["raw_path"]).with_name("meta.json")),
+        summary=meta["summary"],
     )
 
 
@@ -145,21 +142,16 @@ def _format_http_error(exc: HTTPError) -> str:
 
 def _to_json_or_text(raw_text: str) -> JsonValue:
     try:
-        parsed = json.loads(raw_text)
-        return parsed
+        parsed: object = json.loads(raw_text)
+        coerced = ensure_json_value(parsed)
+        if coerced is not None:
+            return coerced
     except json.JSONDecodeError:
         return {"raw_text": raw_text}
+    return {"raw_text": raw_text}
 
 
-def _write_search_artifact(
-    artifact_payload: _ArtifactPayload,
-    artifact_dir: Path | None,
-    artifact_writer: ArtifactWriter | None,
-) -> str:
-    payload_text = json.dumps(artifact_payload, ensure_ascii=False, indent=2)
-    if artifact_writer is not None:
-        return artifact_writer(payload_text)
-
+def _resolve_artifact_dir(artifact_dir: Path | None) -> Path:
     base_dir = artifact_dir or Path(
         os.getenv(
             _WEB_SEARCH_DIR_ENV,
@@ -167,49 +159,7 @@ def _write_search_artifact(
         )
     )
     base_dir.mkdir(parents=True, exist_ok=True)
-    filename = f"{artifact_payload['kind']}_{int.from_bytes(os.urandom(6), 'big')}.json"
-    artifact = base_dir / filename
-    artifact.write_text(payload_text, encoding="utf-8")
-    return str(artifact)
-
-
-def _summarize_list_payload(payload: JsonValue) -> str:
-    if not isinstance(payload, dict):
-        return _summarize_payload(payload)
-
-    raw_results = payload.get("results")
-    if not isinstance(raw_results, list):
-        return _summarize_payload(payload)
-
-    titles = [
-        normalize_text(item.get("title", ""))
-        for item in raw_results[:3]
-        if isinstance(item, dict) and normalize_text(item.get("title", ""))
-    ]
-    query = normalize_text(payload.get("query", ""))
-    summary = f"web_list query='{query}' results={len(raw_results)} top_titles={', '.join(titles) if titles else '(no titles)'}"
-    return summary[:_WEB_SEARCH_SUMMARY_MAX_CHARS]
-
-
-def _summarize_page_payload(payload: JsonValue) -> str:
-    if not isinstance(payload, dict):
-        return _summarize_payload(payload)
-
-    raw_docs = payload.get("docs")
-    if not isinstance(raw_docs, list):
-        return _summarize_payload(payload)
-    if not raw_docs:
-        return "web_page docs=0"
-
-    first = raw_docs[0]
-    if not isinstance(first, dict):
-        return f"web_page docs={len(raw_docs)}"
-
-    title = normalize_text(first.get("title", ""))
-    url = normalize_text(first.get("url", ""))
-    markdown = normalize_text(first.get("markdown", ""))
-    summary = f"web_page docs={len(raw_docs)} first_title='{title}' first_url='{url}' markdown_chars={len(markdown)}"
-    return summary[:_WEB_SEARCH_SUMMARY_MAX_CHARS]
+    return base_dir
 
 
 def _summarize_payload(payload: JsonValue) -> str:

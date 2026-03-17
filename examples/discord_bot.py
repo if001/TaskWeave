@@ -87,7 +87,8 @@ class DiscordNotificationSender(NotificationSenderBase):
             logger.error("Skip notification: unknown text channel id=%s", channel_id)
             return
 
-        await channel.send(message)
+        for chunk in _split_message(message):
+            await channel.send(chunk)
         logger.info("Notification sent to channel=%s", channel_id)
 
         if payload.get("notification_kind") == "main_result":
@@ -153,8 +154,8 @@ class TaskWeaveDiscordBridge:
             return
 
         builder = MentionTaskBuilder(bot_user_id=user.id)
-        speaker_type = "bot" if message.author.bot else "user"
         speaker_id = str(message.author.id)
+        speaker_type = "user" if not message.author.bot else self._agent_id
         conversation_id = _conversation_id(message)
         thread_id = f"{self._agent_id}:{conversation_id}"
         task_id = f"discord:main:{self._turn}_{uuid.uuid4()}"
@@ -257,6 +258,21 @@ def _conversation_id(message: discord.Message) -> str:
     if isinstance(message.channel, discord.TextChannel):
         return str(message.channel.id)
     return "unknown"
+
+
+def _split_message(message: str, *, limit: int = 2000) -> list[str]:
+    normalized = message.strip()
+    if not normalized:
+        return [""]
+    if len(normalized) <= limit:
+        return [normalized]
+    chunks: list[str] = []
+    start = 0
+    while start < len(normalized):
+        end = min(start + limit, len(normalized))
+        chunks.append(normalized[start:end])
+        start = end
+    return chunks
 
 
 async def _run() -> None:

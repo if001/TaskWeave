@@ -93,6 +93,7 @@ async def build_example_runtime(
         return {
             "configurable": configurable or {"thread_id": "user-1"},
             "callbacks": [langfuse_handler],
+            "recursion_limit": 50,
         }
 
     async with _build_main_agent_graph(

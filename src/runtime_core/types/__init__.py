@@ -9,7 +9,7 @@ from .agent_types import (
     WorkerAgentInput,
     WorkerAgentOutput,
 )
-from .json_types import JsonPrimitive, JsonValue
+from .json_types import JsonPrimitive, JsonValue, ensure_json_value
 from .models import ResultStatus, Task, TaskContext, TaskResult, TaskStatus
 
 __all__ = [
@@ -24,6 +24,7 @@ __all__ = [
     "WorkerAgentInput",
     "JsonPrimitive",
     "JsonValue",
+    "ensure_json_value",
     "TaskStatus",
     "ResultStatus",
     "Task",

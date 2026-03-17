@@ -4,6 +4,7 @@ from __future__ import annotations
 # pyright: reportUnknownParameterType=false
 
 import os
+import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -22,8 +23,13 @@ from examples.deep_agent_runtime.web_tools import (
     web_list_and_store_artifact,
     web_page_and_store_artifact,
 )
+from examples.deep_agent_runtime.artifact_tools import (
+    artifact_save,
+    artifact_search,
+)
 from examples.deep_agent_runtime.ollama_client import get_ollama_client
 from runtime_core.infra import get_logger
+from runtime_core.types import JsonValue, ensure_json_value
 from runtime_core.utils.time_utils import now_iso
 from runtime_langchain.task_orchestrator import GraphInput
 
@@ -150,7 +156,7 @@ def make_system_prompt(agent_id: str) -> str:
         "## ツールの方針\n"
         "- 複数回ツールを使うことができます。\n"
         "- ファイルに保存した内容は、必要な部分だけ読んで要約・整理してユーザーに返す。\n"
-        "- 作業途中の整理は /artifacts、長期的に残すべき内容は /memories、作業途中の比較表や要約下書きは /tmp を優先して使う。\n"
+        "- 生成物は /artifacts、長期的に残すべき内容は /memories、作業途中の比較表や要約下書きは /tmp を優先して使う。\n"
         "- /memories/ は用途別に以下へ保存する:\n"
         "  - /memories/profile/: ユーザーの安定した属性や好み\n"
         "  - /memories/topics/: よく話すテーマ、関心領域、継続中の話題\n"
@@ -169,6 +175,18 @@ def make_system_prompt(agent_id: str) -> str:
         f"{mention_block}\n\n"
         f"{last_block}"
     )
+
+
+def _parse_raw_json(raw_json: str) -> JsonValue:
+    try:
+        parsed: object = json.loads(raw_json)
+    except json.JSONDecodeError:
+        parsed = None
+    coerced = ensure_json_value(parsed) if parsed is not None else None
+    if coerced is None:
+        fallback: dict[str, JsonValue] = {"raw_text": raw_json}
+        return fallback
+    return coerced
 
 
 @asynccontextmanager
@@ -218,14 +236,9 @@ async def build_main_deep_agent_graph(
             routes=routes,
         )
 
-    def write_artifact_via_backend(payload_text: str) -> str:
-        filename = f"artifact_{int.from_bytes(os.urandom(6), 'big')}.json"
-        write_result = artifacts_backend.write(f"/{filename}", payload_text)
-        if write_result.error:
-            logger.error(f"write artifact error {write_result.error}")
-            raise RuntimeError(write_result.error)
-        written_path = write_result.path or f"/{filename}"
-        return f"/artifacts{written_path}"
+    def _artifact_dir() -> Path:
+        artifact_save_dir.mkdir(parents=True, exist_ok=True)
+        return artifact_save_dir
 
     @tool("web_list")
     def web_list(query: str, k: int = 5) -> SearchToolResult:
@@ -247,7 +260,7 @@ async def build_main_deep_agent_graph(
             query=query,
             k=k,
             base_url=base_url,
-            artifact_writer=write_artifact_via_backend,
+            artifact_dir=_artifact_dir(),
         )
 
     @tool("web_page")
@@ -268,8 +281,68 @@ async def build_main_deep_agent_graph(
         return web_page_and_store_artifact(
             url=url,
             base_url=base_url,
-            artifact_writer=write_artifact_via_backend,
+            artifact_dir=_artifact_dir(),
         )
+
+    @tool("artifact_save")
+    def artifact_save_tool(
+        kind: str,
+        title: str,
+        summary: str,
+        tags: str,
+        raw_json: str,
+    ) -> dict[str, str]:
+        """Save a raw JSON payload plus metadata into /artifacts.
+
+        Args:
+            kind: Artifact type label.
+            title: Short title.
+            summary: Short summary.
+            tags: Comma-separated tags.
+            raw_json: JSON string to store as raw.json.
+        Returns:
+            Dict containing meta_path and raw_path.
+        """
+        raw_payload = _parse_raw_json(raw_json)
+        meta = artifact_save(
+            kind=kind,
+            raw=raw_payload,
+            artifact_dir=_artifact_dir(),
+            title=title,
+            summary=summary,
+            tags=tags,
+        )
+        return {
+            "meta_path": str(Path(meta["raw_path"]).with_name("meta.json")),
+            "raw_path": meta["raw_path"],
+        }
+
+    @tool("artifact_search")
+    def artifact_search_tool(query: str, limit: int = 5) -> dict[str, list[dict[str, str]]]:
+        """Search artifact metadata and return top matches.
+
+        Args:
+            query: Search query.
+            limit: Max results.
+        Returns:
+            Dict with matches list. Each match has id, kind, title, summary, raw_path.
+        """
+        matches = artifact_search(
+            query=query,
+            artifact_dir=_artifact_dir(),
+            limit=limit,
+        )
+        rendered = [
+            {
+                "id": item["id"],
+                "kind": item["kind"],
+                "title": item["title"],
+                "summary": item["summary"],
+                "raw_path": item["raw_path"],
+            }
+            for item in matches
+        ]
+        return {"matches": rendered}
 
     @after_model(can_jump_to=["end"])
     def check_message(state: AgentState, runtime: Runtime) -> dict[str, str]:
@@ -284,7 +357,7 @@ async def build_main_deep_agent_graph(
     ):
         await memory_store.setup()
         model = get_ollama_client(model_name=model_name)
-        all_tools = [*tools, web_list, web_page]
+        all_tools = [*tools, web_list, web_page, artifact_save_tool, artifact_search_tool]
         agent = create_deep_agent(
             model=model,
             tools=all_tools,

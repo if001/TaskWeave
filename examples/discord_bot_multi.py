@@ -271,7 +271,7 @@ class MultiAgentManager:
             agent_id=agent_id,
             conversation_id=conversation_id,
             speaker_id=source_agent_id,
-            speaker_type="bot",
+            speaker_type=source_agent_id,
             user_id=None,
             thread_id=f"{agent_id}:{conversation_id}",
             bot_hops=bot_hops,
