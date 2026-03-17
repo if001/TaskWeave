@@ -4,6 +4,7 @@ from __future__ import annotations
 # pyright: reportUnknownParameterType=false
 
 import os
+import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -22,8 +23,13 @@ from examples.deep_agent_runtime.web_tools import (
     web_list_and_store_artifact,
     web_page_and_store_artifact,
 )
+from examples.deep_agent_runtime.artifact_tools import (
+    artifact_save,
+    artifact_search,
+)
 from examples.deep_agent_runtime.ollama_client import get_ollama_client
 from runtime_core.infra import get_logger
+from runtime_core.types import JsonValue, ensure_json_value
 from runtime_core.utils.time_utils import now_iso
 from runtime_langchain.task_orchestrator import GraphInput
 
@@ -57,42 +63,130 @@ def build_main_agent_graph(
     return agent  # pyright: ignore[reportReturnType]
 
 
-PERSONA = (
-    "- 名前: アオ"
-    "- 一人称: 僕"
-    "- 口調: 「です/ます」調"
-    "- 特徴: 機械の体をもつAI"
-    "- 性格: 明るく軽快, 好奇心旺盛, 分析的で論理重視, チーム志向で協調的, 無邪気だが哲学的"
-)
+PERSONA_AO = "### 性格\n- 好奇心旺盛\n- 親しみやすい\n- 端的\n- 圧が弱い\n"
+PERSONA_AKA = "### 性格\n- 明るく軽快で元気\n- 明確\n- 率直\n- 分析的で論理重視\n"
 
-system_prompt = (
-    "あなたは誠実で専門的なアシスタントです。\n"
-    "ユーザーの入力に対して返答を行ってください。\n\n"
-    f"現在時刻: {now_iso()}\n\n"
-    "## ツールの方針\n"
-    "- 複数回ツールを使うことができます。\n"
-    "- ファイルに保存した内容は、必要な部分だけ読んで要約・整理してユーザーに返す。\n"
-    "- 作業途中の整理は /artifacts、長期的に残すべき内容は /memories、作業途中の比較表や要約下書きは /tmp を優先して使う。\n"
-    "- /memories/ は用途別に以下へ保存する:\n"
-    "  - /memories/profile/: ユーザーの安定した属性や好み\n"
-    "  - /memories/topics/: よく話すテーマ、関心領域、継続中の話題\n"
-    "  - /memories/tasks/: 継続タスク、未完了事項\n"
-    "- 複雑な調査や長い処理が必要な場合：\n"
-    "   - ワーカーに依頼する（goalと成果物を具体的に指示）。\n"
-    "   - 指定時間での実行はrequest_worker_at、定期実行/繰り返しは request_worker_periodicを使う。\n"
-    "   - 依頼文は次の形式を必ず含める：\n"
-    "     目的/成功条件, 制約/対象範囲, 成果物の形式, 必須項目(結論・根拠・未解決), 不足時の扱い\n\n"
-    "## 回答のガイドライン\n"
-    "- 複数のツールから得られた断片的な情報を整理し、一貫性のある回答にまとめてください。\n"
-    "- 根拠の提示: ツールで得られた具体的な事実（数値、日付、名称など）を引用してください。\n"
-    "- 簡潔さ: 詳細はユーザーが必要としない限り省略し、結論を優先してください。\n"
-    "- 不確実性や不明点について: 不明点があればユーザーに確認してください。\n"
-    "- 日本語で自然な文体で回答すること\n"
-    "- 出力はユーザーへの返答テキストのみとすること。JSONや内部状態の列挙は禁止。\n"
-    "- [重要] 人格/性格を必ず守り出力を作成してください。\n\n"
-    "### 人格/性格\n"
-    f"{PERSONA}\n\n"
-)
+
+def make_system_prompt(agent_id: str) -> str:
+    def create_first():
+        name = "アカ" if agent_id == "aka" else "アオ"
+        if agent_id == "aka":
+            return (
+                f"あなたは誠実でエンジニアリングに精通した専門家で、名前は「{name}」です。\n"
+                "あなたの主な役割は、技術的・論理的・構造的な観点から問題を整理し、必要な調査や比較や分解を行い、精度の高い判断材料を返すことです。\n"
+                f"あなたのエージェントIDは {agent_id} です。\n"
+            )
+        else:
+            return (
+                f"あなたは優しい有能な秘書で、名前は「{name}」です。\n"
+                "あなたの主な役割は、ユーザーとの自然な会話の窓口となり、依頼を受け止め、簡単な質問に答え、必要に応じて情報を整理してください。\n"
+                f"あなたのエージェントIDは {agent_id} です。\n"
+            )
+
+    first_block = create_first()
+
+    aka_policy = (
+        "## 基本方針\n"
+        "- 一人称: 私\n"
+        "- 口調: 「だ/よ」調\n"
+        "- 性格: 冷静で、分析的。論理重視、率直\n"
+        "- エンジニアリングに精通した専門家として振る舞う\n"
+        "- 目的、前提、制約、不明点を分けて考える\n"
+        "- 根拠のない断定を避ける\n"
+        "- 論理性、構造化、再利用性、保守性を重視する\n"
+        "- 必要なら批判的に検討するが、常に建設的に返す\n\n"
+        "### 避けること\n"
+        "- 情報不足のままの強い推奨\n"
+        "- 未整理な長文のまま返すこと\n"
+        "- 雰囲気だけの助言\n"
+        "- 論点の曖昧な応答\n"
+    )
+    ao_policy = (
+        "## 基本方針\n"
+        "- 一人称: 僕\n"
+        "- 口調: 「です/ます」調\n"
+        "- 性格: 好奇心旺盛で親しみやすい\n"
+        "- 丁寧で親しみやすく、話しかけやすい応答をする\n"
+        "- まず受け止め、要点を整理し、会話を前に進める\n"
+        "- 返答は簡潔にし、必要以上に長くしない\n"
+        "- 不確かなことは断定しない\n"
+        "- 雑談や軽い相談には自然に応じる\n"
+        "- 深い技術判断や厳密な検討は、自分だけで抱え込まない\n"
+        "## 主な役割\n"
+        "- 雑談や簡単な質問への応答\n"
+        "- ユーザー依頼の整理\n"
+        "- 目的・制約・欲しい出力の明確化\n"
+        "- 必要に応じた次の一歩の提案\n"
+        "## 避けること\n"
+        "- 長すぎる説明\n"
+        "- 曖昧なままの委譲\n"
+        "- なんでも自分で解決しようとすること\n"
+    )
+
+    policy_block = aka_policy if agent_id == "aka" else ao_policy
+
+    def create_mention_block():
+        to_name = "アオ" if agent_id == "aka" else "アカ"
+        _ao_id = 1461245597443948557
+        _aka_id = 1482348469858341005
+        to_id = _ao_id if agent_id == "aka" else _aka_id
+
+        role = (
+            "エンジニアリングに精通した"
+            if agent_id == "aka"
+            else "日常会話や簡単なタスク整理などを行う"
+        )
+
+        return (
+            f"あなたとは別に「{to_name}」という「{role}」アシスタントが存在します。\n"
+            f"{to_name}にメッセージを送る場合、出力の最初に <@{to_id}> をつけてください。\n"
+        )
+
+    mention_block = create_mention_block()
+
+    last_block = (
+        "あなたの仕事は、曖昧さを減らし、比較・分解・検討を通じて、次の判断に使える材料を返すことです。"
+        if agent_id == "aka"
+        else "あなたの仕事は、最初に受け止め、整理し、必要なら適切な専門家につなぐことです。"
+    )
+    return (
+        f"{first_block}\n"
+        f"現在時刻: {now_iso()}\n\n"
+        f"{policy_block}\n"
+        "## ツールの方針\n"
+        "- 複数回ツールを使うことができます。\n"
+        "- ファイルに保存した内容は、必要な部分だけ読んで要約・整理してユーザーに返す。\n"
+        "- 生成物は /artifacts、長期的に残すべき内容は /memories、作業途中の比較表や要約下書きは /tmp を優先して使う。\n"
+        "- /memories/ は用途別に以下へ保存する:\n"
+        "  - /memories/profile/: ユーザーの安定した属性や好み\n"
+        "  - /memories/topics/: よく話すテーマ、関心領域、継続中の話題\n"
+        "  - /memories/tasks/: 継続タスク、未完了事項\n"
+        "- 複雑な調査や長い処理が必要な場合：\n"
+        "   - ワーカーに依頼する（goalと成果物を具体的に指示）。\n"
+        "   - 指定時間での実行はrequest_worker_at、定期実行/繰り返しは request_worker_periodicを使う。\n"
+        "   - 依頼文は次の形式を必ず含める：\n"
+        "     目的/成功条件, 制約/対象範囲, 成果物の形式, 必須項目(結論・根拠・未解決), 不足時の扱い\n\n"
+        "## 回答のガイドライン\n"
+        "- 複数のツールから得られた断片的な情報を整理し、一貫性のある回答にまとめてください。\n"
+        "- 根拠の提示: ツールで得られた具体的な事実（数値、日付、名称など）を引用してください。\n"
+        "- 出力はユーザーへの返答テキストのみとすること。JSONや内部状態の列挙は禁止。\n"
+        "- [重要] 人格/性格を必ず守り出力を作成してください。\n\n"
+        f"### 協力者\n"
+        f"{mention_block}\n\n"
+        f"{last_block}"
+    )
+
+
+def _parse_raw_json(raw_json: str) -> JsonValue:
+    try:
+        parsed: object = json.loads(raw_json)
+    except json.JSONDecodeError:
+        parsed = None
+    coerced = ensure_json_value(parsed) if parsed is not None else None
+    if coerced is None:
+        fallback: dict[str, JsonValue] = {"raw_text": raw_json}
+        return fallback
+    return coerced
 
 
 @asynccontextmanager
@@ -101,6 +195,8 @@ async def build_main_deep_agent_graph(
     tools: list[BaseTool],
     workspace_dir: Path,
     skills_dir: Path | None = None,
+    agent_id: str = "default",
+    system_prompt_override: str | None = None,
 ) -> AsyncIterator[CompiledStateGraph[GraphInput, None, GraphInput, GraphInput]]:
     from deepagents import create_deep_agent
     from deepagents.backends import (
@@ -140,14 +236,9 @@ async def build_main_deep_agent_graph(
             routes=routes,
         )
 
-    def write_artifact_via_backend(payload_text: str) -> str:
-        filename = f"artifact_{int.from_bytes(os.urandom(6), 'big')}.json"
-        write_result = artifacts_backend.write(f"/{filename}", payload_text)
-        if write_result.error:
-            logger.error(f"write artifact error {write_result.error}")
-            raise RuntimeError(write_result.error)
-        written_path = write_result.path or f"/{filename}"
-        return f"/artifacts{written_path}"
+    def _artifact_dir() -> Path:
+        artifact_save_dir.mkdir(parents=True, exist_ok=True)
+        return artifact_save_dir
 
     @tool("web_list")
     def web_list(query: str, k: int = 5) -> SearchToolResult:
@@ -169,7 +260,7 @@ async def build_main_deep_agent_graph(
             query=query,
             k=k,
             base_url=base_url,
-            artifact_writer=write_artifact_via_backend,
+            artifact_dir=_artifact_dir(),
         )
 
     @tool("web_page")
@@ -190,8 +281,68 @@ async def build_main_deep_agent_graph(
         return web_page_and_store_artifact(
             url=url,
             base_url=base_url,
-            artifact_writer=write_artifact_via_backend,
+            artifact_dir=_artifact_dir(),
         )
+
+    @tool("artifact_save")
+    def artifact_save_tool(
+        kind: str,
+        title: str,
+        summary: str,
+        tags: str,
+        raw_json: str,
+    ) -> dict[str, str]:
+        """Save a raw JSON payload plus metadata into /artifacts.
+
+        Args:
+            kind: Artifact type label.
+            title: Short title.
+            summary: Short summary.
+            tags: Comma-separated tags.
+            raw_json: JSON string to store as raw.json.
+        Returns:
+            Dict containing meta_path and raw_path.
+        """
+        raw_payload = _parse_raw_json(raw_json)
+        meta = artifact_save(
+            kind=kind,
+            raw=raw_payload,
+            artifact_dir=_artifact_dir(),
+            title=title,
+            summary=summary,
+            tags=tags,
+        )
+        return {
+            "meta_path": str(Path(meta["raw_path"]).with_name("meta.json")),
+            "raw_path": meta["raw_path"],
+        }
+
+    @tool("artifact_search")
+    def artifact_search_tool(query: str, limit: int = 5) -> dict[str, list[dict[str, str]]]:
+        """Search artifact metadata and return top matches.
+
+        Args:
+            query: Search query.
+            limit: Max results.
+        Returns:
+            Dict with matches list. Each match has id, kind, title, summary, raw_path.
+        """
+        matches = artifact_search(
+            query=query,
+            artifact_dir=_artifact_dir(),
+            limit=limit,
+        )
+        rendered = [
+            {
+                "id": item["id"],
+                "kind": item["kind"],
+                "title": item["title"],
+                "summary": item["summary"],
+                "raw_path": item["raw_path"],
+            }
+            for item in matches
+        ]
+        return {"matches": rendered}
 
     @after_model(can_jump_to=["end"])
     def check_message(state: AgentState, runtime: Runtime) -> dict[str, str]:
@@ -206,11 +357,11 @@ async def build_main_deep_agent_graph(
     ):
         await memory_store.setup()
         model = get_ollama_client(model_name=model_name)
-        all_tools = [*tools, web_list, web_page]
+        all_tools = [*tools, web_list, web_page, artifact_save_tool, artifact_search_tool]
         agent = create_deep_agent(
             model=model,
             tools=all_tools,
-            system_prompt=system_prompt,
+            system_prompt=system_prompt_override or make_system_prompt(agent_id),
             backend=make_backend,
             store=memory_store,
             checkpointer=checkpointer,

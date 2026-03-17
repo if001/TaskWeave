@@ -4,6 +4,7 @@ from __future__ import annotations
 # pyright: reportUnknownParameterType=false
 
 import os
+import json
 from pathlib import Path
 from tempfile import gettempdir
 
@@ -15,8 +16,12 @@ from examples.deep_agent_runtime.web_tools import (
     web_list_and_store_artifact,
     web_page_and_store_artifact,
 )
+from examples.deep_agent_runtime.artifact_tools import (
+    artifact_save,
+    artifact_search,
+)
 
-from runtime_core.types import Message
+from runtime_core.types import JsonValue, Message, ensure_json_value
 from langgraph.graph.state import CompiledStateGraph, StateGraph, END
 from runtime_langchain.task_orchestrator import GraphInput
 from langchain_core.messages import AnyMessage
@@ -86,6 +91,18 @@ def _extract_last_message_text(messages: list[Message | AnyMessage]) -> str:
     return str(getattr(message, "content", "")).strip()
 
 
+def _parse_raw_json(raw_json: str) -> JsonValue:
+    try:
+        parsed: object = json.loads(raw_json)
+    except json.JSONDecodeError:
+        parsed = None
+    coerced = ensure_json_value(parsed) if parsed is not None else None
+    if coerced is None:
+        fallback: dict[str, JsonValue] = {"raw_text": raw_json}
+        return fallback
+    return coerced
+
+
 def _build_deepagent_worker_graph(
     model_name: str, artifact_dir: Path
 ) -> CompiledStateGraph[GraphInput, None, GraphInput, GraphInput]:
@@ -112,14 +129,6 @@ def _build_deepagent_worker_graph(
             },
         )
 
-    def write_artifact_via_backend(payload_text: str) -> str:
-        filename = f"artifact_{int.from_bytes(os.urandom(6), 'big')}.json"
-        write_result = artifacts_backend.write(f"/{filename}", payload_text)
-        if write_result.error:
-            raise RuntimeError(write_result.error)
-        written_path = write_result.path or f"/{filename}"
-        return f"/artifacts{written_path}"
-
     @tool("web_list")
     def web_list(query: str, k: int = 5) -> SearchToolResult:
         """Search the web and store the result list as an artifact.
@@ -139,7 +148,7 @@ def _build_deepagent_worker_graph(
             query=query,
             k=k,
             base_url=base_url,
-            artifact_writer=write_artifact_via_backend,
+            artifact_dir=artifact_dir,
         )
 
     @tool("web_page")
@@ -159,13 +168,56 @@ def _build_deepagent_worker_graph(
         return web_page_and_store_artifact(
             url=url,
             base_url=base_url,
-            artifact_writer=write_artifact_via_backend,
+            artifact_dir=artifact_dir,
         )
+
+    @tool("artifact_save")
+    def artifact_save_tool(
+        kind: str,
+        title: str,
+        summary: str,
+        tags: str,
+        raw_json: str,
+    ) -> dict[str, str]:
+        """Save a raw JSON payload plus metadata into /artifacts."""
+        raw_payload = _parse_raw_json(raw_json)
+        meta = artifact_save(
+            kind=kind,
+            raw=raw_payload,
+            artifact_dir=artifact_dir,
+            title=title,
+            summary=summary,
+            tags=tags,
+        )
+        return {
+            "meta_path": str(Path(meta["raw_path"]).with_name("meta.json")),
+            "raw_path": meta["raw_path"],
+        }
+
+    @tool("artifact_search")
+    def artifact_search_tool(query: str, limit: int = 5) -> dict[str, list[dict[str, str]]]:
+        """Search artifact metadata and return top matches."""
+        matches = artifact_search(
+            query=query,
+            artifact_dir=artifact_dir,
+            limit=limit,
+        )
+        rendered = [
+            {
+                "id": item["id"],
+                "kind": item["kind"],
+                "title": item["title"],
+                "summary": item["summary"],
+                "raw_path": item["raw_path"],
+            }
+            for item in matches
+        ]
+        return {"matches": rendered}
 
     model = get_ollama_client(model_name=model_name)
     agent = create_deep_agent(
         model=model,
-        tools=[web_list, web_page],
+        tools=[web_list, web_page, artifact_save_tool, artifact_search_tool],
         system_prompt=(
             "You are a focused deep-research worker agent. "
             "Use web_list to collect candidate sources and web_page to fetch details. "
