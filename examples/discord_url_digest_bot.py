@@ -19,6 +19,7 @@ from dotenv import load_dotenv
 
 from examples.deep_agent_runtime.ollama_client import get_ollama_client
 from examples.deep_agent_runtime.web_tools import resolve_simple_client_base_url
+from examples.deep_agent_runtime.artifact_tools import artifact_save
 from runtime_core.infra import get_logger
 
 logger = get_logger("taskweave.examples.discord_url_digest_bot")
@@ -31,6 +32,8 @@ _DISCORD_CHANNEL_ID_ENV = "DISCORD_WATCH_CHANNEL_ID"
 _MAX_PAGE_CHARS = 16_000
 _WEB_REQUEST_TIMEOUT_SECONDS = 20.0
 _URL_RE = re.compile(r"https?://[^\s<>\]\)\"']+")
+
+_AGENT_ID = "ao"
 
 
 @dataclass(slots=True)
@@ -49,16 +52,13 @@ class UrlDigestService:
             raise RuntimeError(
                 "Set SIMPLE_CLIENT_BASE_URL to enable URL fetching via web_tools endpoint."
             )
-        self._artifact_backend = self._build_artifact_backend()
+        self._artifact_dir = self._resolve_artifact_dir()
 
-    def _build_artifact_backend(self):
-        from deepagents.backends import FilesystemBackend
-
-        root = os.getenv(_ARTIFACT_ROOT_ENV, "").strip()
-        root_dir = Path(root) if root else Path(gettempdir()) / "taskweave_deepagent_artifacts"
+    def _resolve_artifact_dir(self) -> Path:
+        root_dir = Path(".state") / _AGENT_ID
         root_dir.mkdir(parents=True, exist_ok=True)
         logger.info("Artifact root directory: %s", root_dir)
-        return FilesystemBackend(root_dir=str(root_dir), virtual_mode=True)
+        return root_dir
 
     async def process_url(self, url: str, message: discord.Message) -> ArticleSummary:
         title, content_text = await asyncio.to_thread(self._fetch_page_content, url)
@@ -88,7 +88,9 @@ class UrlDigestService:
                 raw_text = resp.read().decode("utf-8", errors="replace")
         except HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"page endpoint request failed ({exc.code}): {detail}") from exc
+            raise RuntimeError(
+                f"page endpoint request failed ({exc.code}): {detail}"
+            ) from exc
         except (TimeoutError, SocketTimeout) as exc:
             raise RuntimeError("page endpoint request timed out") from exc
         except URLError as exc:
@@ -113,7 +115,9 @@ class UrlDigestService:
             raise RuntimeError("page endpoint response does not include content")
         return title, markdown
 
-    async def _summarize_and_tag(self, *, url: str, title: str, content: str) -> ArticleSummary:
+    async def _summarize_and_tag(
+        self, *, url: str, title: str, content: str
+    ) -> ArticleSummary:
         prompt = (
             "次の記事を日本語で要約してください。必ずJSONのみ返してください。\\n"
             "要件:\\n"
@@ -166,13 +170,11 @@ class UrlDigestService:
                 "interest_direction_update",
             ],
         }
-        virtual_path = f"/artifact/articles/{date_slug}/{record_id}.json"
-        write_result = self._artifact_backend.write(
-            virtual_path,
-            json.dumps(payload, ensure_ascii=False, indent=2),
+        artifact_save(
+            kind="url_digest",
+            raw=payload,
+            artifact_dir=self._artifact_dir,
         )
-        if write_result.error:
-            raise RuntimeError(write_result.error)
 
 
 class DiscordUrlDigestBot(discord.Client):
@@ -201,16 +203,12 @@ class DiscordUrlDigestBot(discord.Client):
                 async with message.channel.typing():
                     result = await self._service.process_url(url, message)
                 tag_text = " ".join(f"#{tag}" for tag in result.tags)
-                await message.channel.send(
-                    f"要約: {result.summary}\\nタグ: {tag_text}"
-                )
+                await message.channel.send(f"要約: {result.summary}\\nタグ: {tag_text}")
                 elapsed = time.perf_counter() - started
                 logger.info("Processed URL in %.2fs: %s", elapsed, url)
             except Exception:
                 logger.exception("Failed to process URL: %s", url)
-                await message.channel.send(
-                    f"URLの処理に失敗しました: {url}"
-                )
+                await message.channel.send(f"URLの処理に失敗しました: {url}")
 
 
 def _parse_json(raw: str) -> dict[str, object]:
@@ -257,7 +255,9 @@ def _resolve_watch_channel_id() -> int | None:
 async def _run() -> None:
     load_dotenv()
     service = UrlDigestService()
-    client = DiscordUrlDigestBot(service=service, channel_id=_resolve_watch_channel_id())
+    client = DiscordUrlDigestBot(
+        service=service, channel_id=_resolve_watch_channel_id()
+    )
     await client.start(_require_token())
 
 

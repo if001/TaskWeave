@@ -10,6 +10,8 @@ from uuid import uuid4
 
 from langchain_core.documents import Document
 from langchain_ollama import OllamaEmbeddings
+from langchain_postgres.v2.engine import PGEngine
+from langchain_postgres.v2.vectorstores import PGVectorStore
 
 from examples.deep_agent_runtime.ollama_client import get_ollama_client
 from runtime_core.infra import get_logger
@@ -19,7 +21,8 @@ _ARTIFACT_MODEL_ENV = "ARTIFACT_OLLAMA_MODEL"
 _ARTIFACT_EMBED_MODEL_ENV = "ARTIFACT_OLLAMA_EMBED_MODEL"
 _ARTIFACT_RERANK_MODEL_ENV = "ARTIFACT_OLLAMA_RERANK_MODEL"
 _ARTIFACT_PG_DSN_ENV = "ARTIFACT_PG_DSN"
-_ARTIFACT_PG_COLLECTION_ENV = "ARTIFACT_PG_COLLECTION"
+_ARTIFACT_PG_SCHEMA_ENV = "ARTIFACT_PG_SCHEMA"
+_ARTIFACT_PG_TABLE_ENV = "ARTIFACT_PG_TABLE"
 _ARTIFACT_MAX_INPUT_CHARS = 6000
 _ARTIFACT_RERANK_MAX_CANDIDATES = 20
 _ARTIFACT_VECTOR_MULTIPLIER = 5
@@ -241,14 +244,14 @@ def _get_vectorstore():
     dsn = os.getenv(_ARTIFACT_PG_DSN_ENV, "").strip()
     if not dsn:
         return None
-    collection = os.getenv(_ARTIFACT_PG_COLLECTION_ENV, "artifacts")
-    from langchain_postgres.vectorstores import PGVector
-
-    return PGVector(
-        embeddings=_get_embeddings(),
-        connection=dsn,
-        collection_name=collection,
-        create_extension=True,
+    schema = os.getenv(_ARTIFACT_PG_SCHEMA_ENV, "app")
+    table = os.getenv(_ARTIFACT_PG_TABLE_ENV, "documents")
+    pg_engine = PGEngine.from_connection_string(url=dsn)
+    return PGVectorStore.create_sync(
+        engine=pg_engine,
+        table_name=table,
+        schema_name=schema,
+        embedding_service=_get_embeddings(),
     )
 
 
