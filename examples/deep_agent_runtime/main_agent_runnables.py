@@ -287,30 +287,21 @@ async def build_main_deep_agent_graph(
     @tool("artifact_save")
     def artifact_save_tool(
         kind: str,
-        title: str,
-        summary: str,
-        tags: str,
         raw_json: str,
     ) -> dict[str, str]:
         """Save a raw JSON payload plus metadata into /artifacts.
 
         Args:
             kind: Artifact type label.
-            title: Short title.
-            summary: Short summary.
-            tags: Comma-separated tags.
             raw_json: JSON string to store as raw.json.
         Returns:
-            Dict containing meta_path and raw_path.
+            Dict containing artifact_id and raw_path.
         """
         raw_payload = _parse_raw_json(raw_json)
         meta = artifact_save(
             kind=kind,
             raw=raw_payload,
             artifact_dir=_artifact_dir(),
-            title=title,
-            summary=summary,
-            tags=tags,
         )
         return {
             "artifact_id": meta["id"],
@@ -329,7 +320,6 @@ async def build_main_deep_agent_graph(
         """
         matches = artifact_search(
             query=query,
-            artifact_dir=_artifact_dir(),
             limit=limit,
         )
         rendered = [

@@ -203,7 +203,9 @@ class DiscordUrlDigestBot(discord.Client):
                 async with message.channel.typing():
                     result = await self._service.process_url(url, message)
                 tag_text = " ".join(f"#{tag}" for tag in result.tags)
-                await message.channel.send(f"要約: {result.summary}\\nタグ: {tag_text}")
+                await message.channel.send(
+                    f"要約\n{result.summary}\n\nタグ: {tag_text}"
+                )
                 elapsed = time.perf_counter() - started
                 logger.info("Processed URL in %.2fs: %s", elapsed, url)
             except Exception:

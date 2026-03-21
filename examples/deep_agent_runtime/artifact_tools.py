@@ -40,12 +40,6 @@ class ArtifactMeta(TypedDict):
 
 
 @dataclass(slots=True)
-class ArtifactSearchResult:
-    meta: ArtifactMeta
-    score: int
-
-
-@dataclass(slots=True)
 class _ArtifactCandidate:
     meta: ArtifactMeta
     vector_score: float
@@ -56,9 +50,6 @@ def artifact_save(
     kind: str,
     raw: JsonValue,
     artifact_dir: Path,
-    title: str | None = None,
-    summary: str | None = None,
-    tags: list[str] | str | None = None,
 ) -> ArtifactMeta:
     artifact_dir.mkdir(parents=True, exist_ok=True)
     artifact_id = uuid4().hex
@@ -71,9 +62,6 @@ def artifact_save(
         encoding="utf-8",
     )
 
-    _ = title
-    _ = summary
-    _ = tags
     resolved_title = _generate_title(kind, raw)
     resolved_summary = _generate_summary(kind, raw)
     resolved_tags = _generate_tags(kind, raw)
@@ -92,10 +80,8 @@ def artifact_save(
 def artifact_search(
     *,
     query: str,
-    artifact_dir: Path,
     limit: int = 5,
 ) -> list[ArtifactMeta]:
-    _ = artifact_dir
     if not query.strip():
         return []
 
@@ -208,7 +194,7 @@ def _get_rerank_model():
 @lru_cache(maxsize=1)
 def _get_embeddings() -> OllamaEmbeddings:
     model_name = os.getenv(_ARTIFACT_EMBED_MODEL_ENV, "nomic-embed-text")
-    base_url = os.getenv("OLLAMA_BASE_URL", "")
+    base_url = os.getenv("OLLAMA_BASE_URL_LOCAL", "")
     return OllamaEmbeddings(model=model_name, base_url=base_url)
 
 
@@ -340,7 +326,7 @@ def _rerank_with_ollama(
         "You are a reranking model. Score each candidate for relevance to the query.\n"
         f"Query: {query}\n"
         f"Candidates: {payload}\n"
-        "Return a JSON array of objects: [{\"id\": \"...\", \"score\": 0-10}, ...]."
+        'Return a JSON array of objects: [{"id": "...", "score": 0-10}, ...].'
     )
     response = _call_rerank_model(prompt)
     if not response:

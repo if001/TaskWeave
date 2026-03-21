@@ -174,9 +174,6 @@ def _build_deepagent_worker_graph(
     @tool("artifact_save")
     def artifact_save_tool(
         kind: str,
-        title: str,
-        summary: str,
-        tags: str,
         raw_json: str,
     ) -> dict[str, str]:
         """Save a raw JSON payload plus metadata into /artifacts."""
@@ -185,9 +182,6 @@ def _build_deepagent_worker_graph(
             kind=kind,
             raw=raw_payload,
             artifact_dir=artifact_dir,
-            title=title,
-            summary=summary,
-            tags=tags,
         )
         return {
             "artifact_id": meta["id"],
@@ -199,7 +193,6 @@ def _build_deepagent_worker_graph(
         """Search artifact metadata and return top matches."""
         matches = artifact_search(
             query=query,
-            artifact_dir=artifact_dir,
             limit=limit,
         )
         rendered = [
