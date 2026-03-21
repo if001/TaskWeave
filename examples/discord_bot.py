@@ -208,7 +208,9 @@ class TaskWeaveDiscordBridge:
             notification_sender=DiscordNotificationSender(
                 self._client, typing_controller=self._typing_controller
             ),
-            repository=FileTaskRepository(str(self._workspace_dir / "task.json")),
+            repository=FileTaskRepository(
+                str(self._workspace_dir / self._agent_id / "task.json")
+            ),
             workspace_dir=self._workspace_dir,
             agent_id=self._agent_id,
         )

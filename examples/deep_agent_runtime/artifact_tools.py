@@ -85,11 +85,6 @@ def artifact_save(
         "tags": resolved_tags,
         "raw_path": str(raw_path),
     }
-    meta_path = target_dir / "meta.json"
-    meta_path.write_text(
-        json.dumps(meta, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
     _store_meta_in_vectorstore(meta)
     return meta
 
@@ -100,41 +95,19 @@ def artifact_search(
     artifact_dir: Path,
     limit: int = 5,
 ) -> list[ArtifactMeta]:
+    _ = artifact_dir
     if not query.strip():
         return []
 
     vectorstore = _get_vectorstore()
     if vectorstore is None:
-        return _fallback_search(query=query, artifact_dir=artifact_dir, limit=limit)
+        return []
 
     candidates = _search_vectorstore(vectorstore, query, limit)
     if not candidates:
         return []
     reranked = _rerank_candidates(query, candidates)
     return [item.meta for item in reranked[: max(limit, 1)]]
-
-
-def _read_meta(path: Path) -> ArtifactMeta | None:
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    required = {"id", "kind", "title", "summary", "tags", "raw_path"}
-    if not required.issubset(data.keys()):
-        return None
-    tags = data.get("tags")
-    if not isinstance(tags, list):
-        tags = []
-    return ArtifactMeta(
-        id=str(data.get("id", "")),
-        kind=str(data.get("kind", "")),
-        title=str(data.get("title", "")),
-        summary=str(data.get("summary", "")),
-        tags=[str(tag) for tag in tags if str(tag).strip()],
-        raw_path=str(data.get("raw_path", "")),
-    )
 
 
 def _score_meta(meta: ArtifactMeta, tokens: list[str]) -> int:
@@ -402,24 +375,6 @@ def _call_rerank_model(prompt: str) -> str:
     if isinstance(content, str):
         return content.strip()
     return str(content).strip()
-
-
-def _fallback_search(
-    *, query: str, artifact_dir: Path, limit: int
-) -> list[ArtifactMeta]:
-    if not artifact_dir.exists():
-        return []
-    tokens = _tokenize(query)
-    results: list[ArtifactSearchResult] = []
-    for meta_path in artifact_dir.rglob("meta.json"):
-        meta = _read_meta(meta_path)
-        if meta is None:
-            continue
-        score = _score_meta(meta, tokens)
-        if score > 0:
-            results.append(ArtifactSearchResult(meta=meta, score=score))
-    results.sort(key=lambda item: item.score, reverse=True)
-    return [item.meta for item in results[: max(limit, 1)]]
 
 
 def _fallback_title(kind: str) -> str:

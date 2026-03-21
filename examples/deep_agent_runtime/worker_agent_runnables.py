@@ -190,7 +190,7 @@ def _build_deepagent_worker_graph(
             tags=tags,
         )
         return {
-            "meta_path": str(Path(meta["raw_path"]).with_name("meta.json")),
+            "artifact_id": meta["id"],
             "raw_path": meta["raw_path"],
         }
 

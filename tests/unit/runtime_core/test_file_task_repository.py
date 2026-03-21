@@ -24,7 +24,6 @@ class FileTaskRepositoryTests(unittest.TestCase):
             assert task is not None
             self.assertEqual(task.status, "running")
             self.assertEqual(task.run_after, 10.0)
-            self.assertEqual(len(loaded.transitions), 2)
 
     def test_lease_next_ready_respects_run_after(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

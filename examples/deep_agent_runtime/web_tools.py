@@ -64,7 +64,7 @@ def web_list_and_store_artifact(
     )
     return SearchToolResult(
         status="ok",
-        artifact_path=str(Path(meta["raw_path"]).with_name("meta.json")),
+        artifact_path=meta["raw_path"],
         summary=meta["summary"],
     )
 
@@ -96,7 +96,7 @@ def web_page_and_store_artifact(
     )
     return SearchToolResult(
         status="ok",
-        artifact_path=str(Path(meta["raw_path"]).with_name("meta.json")),
+        artifact_path=meta["raw_path"],
         summary=meta["summary"],
     )
 
