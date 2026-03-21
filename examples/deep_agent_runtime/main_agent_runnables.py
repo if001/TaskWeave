@@ -161,9 +161,9 @@ def make_system_prompt(agent_id: str) -> str:
         "  - /memories/profile/: ユーザーの安定した属性や好み\n"
         "  - /memories/topics/: よく話すテーマ、関心領域、継続中の話題\n"
         "  - /memories/tasks/: 継続タスク、未完了事項\n"
-        "- 複雑な調査や長い処理が必要な場合：\n"
-        "   - ワーカーに依頼する（goalと成果物を具体的に指示）。\n"
-        "   - 指定時間での実行はrequest_worker_at、定期実行/繰り返しは request_worker_periodicを使う。\n"
+        "- 複雑な調査や定期実行/繰り返し処理が必要な場合：\n"
+        "   - ワーカーに依頼してください。必ずskillsを参照すること。\n"
+        "   - 指定時間での実行はrequest_worker_at、定期実行/繰り返しは request_worker_periodicを利用すること\n"
         "   - 依頼文は次の形式を必ず含める：\n"
         "     目的/成功条件, 制約/対象範囲, 成果物の形式, 必須項目(結論・根拠・未解決), 不足時の扱い\n\n"
         "## 回答のガイドライン\n"
@@ -309,7 +309,9 @@ async def build_main_deep_agent_graph(
         }
 
     @tool("artifact_search")
-    def artifact_search_tool(query: str, limit: int = 5) -> dict[str, list[dict[str, str]]]:
+    def artifact_search_tool(
+        query: str, limit: int = 5
+    ) -> dict[str, list[dict[str, str]]]:
         """Search artifact metadata and return top matches.
 
         Args:
@@ -347,7 +349,13 @@ async def build_main_deep_agent_graph(
     ):
         await memory_store.setup()
         model = get_ollama_client(model_name=model_name)
-        all_tools = [*tools, web_list, web_page, artifact_save_tool, artifact_search_tool]
+        all_tools = [
+            *tools,
+            web_list,
+            web_page,
+            artifact_save_tool,
+            artifact_search_tool,
+        ]
         agent = create_deep_agent(
             model=model,
             tools=all_tools,
