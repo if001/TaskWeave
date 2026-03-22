@@ -70,14 +70,10 @@ class Runtime:
         return True
 
     def cancel_tasks_by_parent(self, parent_task_id: str) -> list[str]:
-        return self._cancel_tasks(
-            self.list_tasks(parent_task_id=parent_task_id)
-        )
+        return self._cancel_matching_tasks(parent_task_id=parent_task_id)
 
     def cancel_tasks_by_periodic_root(self, periodic_root_id: str) -> list[str]:
-        return self._cancel_tasks(
-            self.list_tasks(periodic_root_id=periodic_root_id)
-        )
+        return self._cancel_matching_tasks(periodic_root_id=periodic_root_id)
 
     async def tick(self, now_unix: float | None = None) -> bool:
         now = now_unix if now_unix is not None else time()
@@ -109,7 +105,20 @@ class Runtime:
         self._commit(task, result, now, attempt)
         return result
 
-    def _cancel_tasks(self, tasks: list[Task]) -> list[str]:
+    def _cancel_matching_tasks(
+        self,
+        *,
+        parent_task_id: str | None = None,
+        periodic_root_id: str | None = None,
+        dedupe_key: str | None = None,
+        statuses: list[TaskStatus] | None = None,
+    ) -> list[str]:
+        tasks = self._repository.list_tasks(
+            statuses=statuses,
+            parent_task_id=parent_task_id,
+            periodic_root_id=periodic_root_id,
+            dedupe_key=dedupe_key,
+        )
         cancelled: list[str] = []
         for task in tasks:
             if self.cancel_task(task.id):
@@ -121,6 +130,24 @@ class Runtime:
             return
         periodic_tasks = self._scheduler.generate_periodic_tasks(now_unix, self._periodic_rules)
         self._repository.enqueue_many(periodic_tasks)
+
+    def _enqueue_next_tasks(self, tasks: list[Task]) -> None:
+        for task in tasks:
+            self._replace_pending_task(task)
+            self._repository.enqueue(task)
+
+    def _replace_pending_task(self, task: Task) -> None:
+        if not _should_replace_pending(task):
+            return
+        dedupe_key = task.dedupe_key
+        if dedupe_key is None:
+            return
+        pending_task_ids = self._cancel_matching_tasks(
+            statuses=["queued", "leased"],
+            dedupe_key=dedupe_key,
+        )
+        for pending_task_id in pending_task_ids:
+            self._repository.clear_dedupe_key(pending_task_id)
 
     def _start_task(self, task: Task) -> int:
         self._repository.mark_status(task.id, "running")
@@ -177,7 +204,7 @@ class Runtime:
             return TaskResult(status="failed", error=str(exc))
 
     def _commit(self, task: Task, result: TaskResult, now_unix: float, attempt: int) -> None:
-        self._repository.enqueue_many(result.next_tasks)
+        self._enqueue_next_tasks(result.next_tasks)
         if result.next_tasks:
             logger.info("Enqueued next tasks count=%s parent=%s", len(result.next_tasks), task.id)
 
@@ -224,3 +251,8 @@ class Runtime:
         if deadline_unix is None:
             return False
         return now_unix >= deadline_unix
+
+
+def _should_replace_pending(task: Task) -> bool:
+    replace_pending = task.metadata.get("replace_pending")
+    return isinstance(replace_pending, bool) and replace_pending and task.dedupe_key is not None

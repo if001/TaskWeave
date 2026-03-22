@@ -80,7 +80,10 @@ class TaskRepository(Protocol):
         kinds: list[str] | None = None,
         parent_task_id: str | None = None,
         periodic_root_id: str | None = None,
+        dedupe_key: str | None = None,
     ) -> list[Task]: ...
+
+    def clear_dedupe_key(self, task_id: str) -> None: ...
 
 
 class _TaskRepositoryBase(TaskRepository):
@@ -105,8 +108,7 @@ class _TaskRepositoryBase(TaskRepository):
         self._tasks[task.id] = task
         self._order.append(task.id)
         self._attempts[task.id] = 0
-        if task.dedupe_key:
-            self._task_id_by_dedupe_key[task.dedupe_key] = task.id
+        self._set_dedupe_key(task)
         self._persist()
         logger.info("Task enqueued id=%s kind=%s", task.id, task.kind)
 
@@ -163,24 +165,46 @@ class _TaskRepositoryBase(TaskRepository):
         kinds: list[str] | None = None,
         parent_task_id: str | None = None,
         periodic_root_id: str | None = None,
+        dedupe_key: str | None = None,
     ) -> list[Task]:
         status_filter = set(statuses) if statuses else None
         kind_filter = set(kinds) if kinds else None
         tasks: list[Task] = []
         for task_id in self._order:
             task = self._tasks[task_id]
-            if status_filter is not None and task.status not in status_filter:
+            if not _matches_task_filters(
+                task,
+                status_filter=status_filter,
+                kind_filter=kind_filter,
+                parent_task_id=parent_task_id,
+                periodic_root_id=periodic_root_id,
+                dedupe_key=dedupe_key,
+            ):
                 continue
-            if kind_filter is not None and task.kind not in kind_filter:
-                continue
-            if parent_task_id is not None and task.parent_task_id != parent_task_id:
-                continue
-            if periodic_root_id is not None:
-                root_id = task.payload.get("periodic_root_id")
-                if root_id != periodic_root_id:
-                    continue
             tasks.append(task)
         return tasks
+
+    def clear_dedupe_key(self, task_id: str) -> None:
+        task = self._require_task(task_id)
+        dedupe_key = task.dedupe_key
+        if dedupe_key is None:
+            return
+        self._unset_dedupe_key(task)
+        self._persist()
+
+    def _set_dedupe_key(self, task: Task) -> None:
+        if task.dedupe_key is None:
+            return
+        self._task_id_by_dedupe_key[task.dedupe_key] = task.id
+
+    def _unset_dedupe_key(self, task: Task) -> None:
+        dedupe_key = task.dedupe_key
+        if dedupe_key is None:
+            return
+        mapped_task_id = self._task_id_by_dedupe_key.get(dedupe_key)
+        if mapped_task_id == task.id:
+            del self._task_id_by_dedupe_key[dedupe_key]
+        task.dedupe_key = None
 
     def _require_task(self, task_id: str) -> Task:
         task = self._tasks.get(task_id)
@@ -405,3 +429,25 @@ def _parse_task_status(value: JsonValue | None) -> TaskStatus:
     if value in _ALLOWED_TRANSITIONS:
         return value
     raise ValueError("Invalid task status")
+
+
+def _matches_task_filters(
+    task: Task,
+    *,
+    status_filter: set[TaskStatus] | None,
+    kind_filter: set[str] | None,
+    parent_task_id: str | None,
+    periodic_root_id: str | None,
+    dedupe_key: str | None,
+) -> bool:
+    if status_filter is not None and task.status not in status_filter:
+        return False
+    if kind_filter is not None and task.kind not in kind_filter:
+        return False
+    if parent_task_id is not None and task.parent_task_id != parent_task_id:
+        return False
+    if periodic_root_id is not None and task.payload.get("periodic_root_id") != periodic_root_id:
+        return False
+    if dedupe_key is not None and task.dedupe_key != dedupe_key:
+        return False
+    return True

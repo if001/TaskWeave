@@ -7,12 +7,13 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+from langchain_core.callbacks.base import BaseCallbackHandler
 from langfuse import get_client
 from langfuse.langchain import CallbackHandler
-from langchain_core.callbacks.base import BaseCallbackHandler
 from langgraph.graph.state import CompiledStateGraph, RunnableConfig
 
 from examples.deep_agent_runtime.main_agent_runnables import build_main_deep_agent_graph
+from examples.deep_agent_runtime.memory_reflection import MemoryReflectionTaskHandler
 from examples.deep_agent_runtime.worker_agent_runnables import (
     build_worker_agent_graph,
     resolve_deepagent_artifact_dir,
@@ -36,6 +37,7 @@ from runtime_langchain.task_orchestrator import GraphInput
 TASK_KIND_MAIN_RESEARCH = "main_research"
 TASK_KIND_WORKER_RESEARCH = "worker_research"
 TASK_KIND_NOTIFICATION = "notification"
+TASK_KIND_MEMORY_REFLECTION = "memory_reflection"
 DEFAULT_MODEL_NAME = "gpt-oss:20b"
 _REAL_AGENT_ENV = "USE_REAL_DEEP_AGENT"
 _MODEL_ENV = "MODEL_NAME"
@@ -43,6 +45,7 @@ _BACKEND_ENV = "REAL_AGENT_BACKEND"
 _BACKEND_LANGCHAIN = "langchain"
 _BACKEND_DEEPAGENT = "deepagent"
 _DEEPAGENT_ARTIFACT_DIR_ENV = "DEEPAGENT_ARTIFACT_DIR"
+_MEMORY_REFLECTION_DELAY_SECONDS = 5.0
 
 logger = get_logger(__name__)
 
@@ -63,6 +66,7 @@ async def build_example_runtime(
     agent_id: str = "default",
 ) -> AsyncIterator[ExampleRuntimeBundle]:
     resolved_repository = repository or FileTaskRepository("./.state/task.json")
+    resolved_workspace_dir = _resolve_workspace_dir(workspace_dir)
     registry = HandlerRegistry()
     runtime = Runtime(
         repository=resolved_repository,
@@ -72,13 +76,14 @@ async def build_example_runtime(
     )
     builder = ResearchRuntimeBuilder(
         runtime,
-        config=TaskResultConfig(
-            worker_task_kind=TASK_KIND_WORKER_RESEARCH,
-            notification_task_kind=TASK_KIND_NOTIFICATION,
-        ),
+        config=_task_result_config(),
     )
 
-    async with _build_main_agent_graph(builder, workspace_dir=workspace_dir, agent_id=agent_id) as main_graph:
+    async with _build_main_agent_graph(
+        builder,
+        workspace_dir=resolved_workspace_dir,
+        agent_id=agent_id,
+    ) as main_graph:
         builder.register_main(
             registry,
             kind=TASK_KIND_MAIN_RESEARCH,
@@ -88,12 +93,16 @@ async def build_example_runtime(
         builder.register_worker(
             registry,
             kind=TASK_KIND_WORKER_RESEARCH,
-            runnable=_build_worker_graph(workspace_dir=workspace_dir),
+            runnable=_build_worker_graph(workspace_dir=resolved_workspace_dir),
         )
         builder.register_notification(
             registry,
             kind=TASK_KIND_NOTIFICATION,
             sender=notification_sender,
+        )
+        registry.register(
+            TASK_KIND_MEMORY_REFLECTION,
+            MemoryReflectionTaskHandler(workspace_dir=resolved_workspace_dir),
         )
         yield ExampleRuntimeBundle(runtime=runtime, repository=resolved_repository)
 
@@ -118,11 +127,19 @@ def build_example_task_id(*, turn: int) -> str:
     return f"example:main:{turn}:{uuid.uuid4().hex}"
 
 
+def _task_result_config() -> TaskResultConfig:
+    return TaskResultConfig(
+        worker_task_kind=TASK_KIND_WORKER_RESEARCH,
+        notification_task_kind=TASK_KIND_NOTIFICATION,
+        memory_reflection_task_kind=TASK_KIND_MEMORY_REFLECTION,
+        memory_reflection_delay_seconds=_MEMORY_REFLECTION_DELAY_SECONDS,
+    )
+
+
 def _build_config_mapper(agent_id: str):
     def config_mapper(ctx: TaskContext) -> RunnableConfig:
-        configurable = _build_configurable(ctx)
         config: RunnableConfig = {
-            "configurable": configurable,
+            "configurable": _build_configurable(ctx),
             "recursion_limit": 50,
         }
         callbacks = _build_callbacks(ctx, agent_id)
@@ -178,7 +195,7 @@ def _trace_seed(ctx: TaskContext, agent_id: str) -> str:
 async def _build_main_agent_graph(
     builder: ResearchRuntimeBuilder,
     *,
-    workspace_dir: Path | None,
+    workspace_dir: Path,
     agent_id: str,
 ) -> AsyncIterator[CompiledStateGraph[GraphInput, None, GraphInput, GraphInput]]:
     if not _is_real_agent_enabled():
@@ -188,20 +205,20 @@ async def _build_main_agent_graph(
     async with build_main_deep_agent_graph(
         model_name=os.getenv(_MODEL_ENV, DEFAULT_MODEL_NAME),
         tools=builder.main_tools(),
-        workspace_dir=_resolve_workspace_dir(workspace_dir),
+        workspace_dir=workspace_dir,
         agent_id=agent_id,
     ) as graph:
         yield graph
 
 
 def _build_worker_graph(
-    *, workspace_dir: Path | None
+    *, workspace_dir: Path
 ) -> CompiledStateGraph[GraphInput, None, GraphInput, GraphInput]:
     return build_worker_agent_graph(
         use_real_agent=_is_real_agent_enabled(),
         backend=_resolve_real_agent_backend(),
         model_name=os.getenv(_MODEL_ENV, DEFAULT_MODEL_NAME),
-        artifact_dir=_resolve_workspace_dir(workspace_dir),
+        workspace_dir=workspace_dir,
     )
 
 

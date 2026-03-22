@@ -179,14 +179,15 @@ async def build_main_deep_agent_graph(
         CompositeBackend,
         FilesystemBackend,
         StateBackend,
-        StoreBackend,
     )
     from langchain.tools import ToolRuntime
     from langgraph.store.sqlite import AsyncSqliteStore
 
     store_path = workspace_dir / "langgraph_store.sqlite"
     checkpoint_path = workspace_dir / "langgraph_checkpoints.sqlite"
+    memory_dir = workspace_dir / "memories"
     artifact_save_dir = workspace_dir / "artifacts"
+    memories_backend = FilesystemBackend(root_dir=str(memory_dir), virtual_mode=True)
     artifacts_backend = FilesystemBackend(
         root_dir=str(artifact_save_dir), virtual_mode=True
     )
@@ -200,7 +201,7 @@ async def build_main_deep_agent_graph(
 
     def make_backend(runtime: ToolRuntime) -> CompositeBackend:
         routes = {
-            "/memories/": StoreBackend(runtime),
+            "/memories/": memories_backend,
             "/artifacts/": artifacts_backend,
             "/tmp/": StateBackend(runtime),
         }
@@ -211,6 +212,7 @@ async def build_main_deep_agent_graph(
             routes=routes,
         )
 
+    memory_dir.mkdir(parents=True, exist_ok=True)
     artifact_save_dir.mkdir(parents=True, exist_ok=True)
     research_tools = build_research_tools(
         artifact_dir=artifact_save_dir,

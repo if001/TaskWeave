@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from langchain_core.tools import BaseTool
-from langgraph.graph.state import CompiledStateGraph, RunnableConfig
+from langgraph.graph.state import CompiledStateGraph, END, StateGraph, RunnableConfig
 
 from runtime_core.notifications import (
     NoopNotificationSender,
@@ -14,8 +14,9 @@ from runtime_core.notifications import (
 from runtime_core.runtime import HandlerRegistry, Runtime
 from runtime_core.tasks import TaskResultConfig
 from runtime_core.types.models import TaskContext
-from runtime_langchain.runnable_handler import BeforeInvoke, ConfigMapper
-from .research_handlers import MainResearchTaskHandler, WorkerResearchTaskHandler
+
+from .research_handlers import build_main_task_handler, build_worker_task_handler
+from .runnable_handler import BeforeInvoke, ConfigMapper, RunnableTaskHandler
 from .task_management_tools import build_task_management_tools
 from .task_orchestrator import GraphInput, TaskOrchestrator
 
@@ -41,10 +42,8 @@ class ResearchRuntimeBuilder:
             *build_task_management_tools(self._runtime),
         ]
 
-    def mock_main_graph(
-        self,
-    ) -> CompiledStateGraph[GraphInput, None, GraphInput, GraphInput]:
-        return self._orchestrator.mock_main_graph()
+    def mock_main_graph(self) -> CompiledStateGraph[GraphInput, None, GraphInput, GraphInput]:
+        return _build_mock_main_graph()
 
     def register_main(
         self,
@@ -57,9 +56,10 @@ class ResearchRuntimeBuilder:
         before_invoke: BeforeInvoke[GraphInput] | None = None,
         after_invoke: Callable[[TaskContext, GraphInput], GraphInput] | None = None,
     ) -> None:
-        registry.register(
-            kind,
-            MainResearchTaskHandler(
+        self._register_handler(
+            registry,
+            kind=kind,
+            handler=build_main_task_handler(
                 runnable=runnable,
                 orchestrator=self._orchestrator,
                 prompt_builder=prompt_builder,
@@ -80,9 +80,10 @@ class ResearchRuntimeBuilder:
         before_invoke: BeforeInvoke[GraphInput] | None = None,
         after_invoke: Callable[[TaskContext, GraphInput], GraphInput] | None = None,
     ) -> None:
-        registry.register(
-            kind,
-            WorkerResearchTaskHandler(
+        self._register_handler(
+            registry,
+            kind=kind,
+            handler=build_worker_task_handler(
                 runnable=runnable,
                 orchestrator=self._orchestrator,
                 prompt_builder=prompt_builder,
@@ -99,7 +100,28 @@ class ResearchRuntimeBuilder:
         kind: str,
         sender: NotificationSender | None = None,
     ) -> None:
-        registry.register(
-            kind,
-            NotificationTaskHandler(sender=sender or NoopNotificationSender()),
+        self._register_handler(
+            registry,
+            kind=kind,
+            handler=NotificationTaskHandler(sender=sender or NoopNotificationSender()),
         )
+
+    def _register_handler(
+        self,
+        registry: HandlerRegistry,
+        *,
+        kind: str,
+        handler: RunnableTaskHandler | NotificationTaskHandler,
+    ) -> None:
+        registry.register(kind, handler)
+
+
+def _build_mock_main_graph() -> CompiledStateGraph[GraphInput, None, GraphInput, GraphInput]:
+    def _echo(state: GraphInput) -> GraphInput:
+        return state
+
+    graph = StateGraph(GraphInput)
+    graph.add_node("main", _echo)
+    graph.set_entry_point("main")
+    graph.add_edge("main", END)
+    return graph.compile()

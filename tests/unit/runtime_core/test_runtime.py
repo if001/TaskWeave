@@ -11,6 +11,17 @@ class _FailingHandler:
         raise RuntimeError("boom")
 
 
+
+
+class _SuccessHandler:
+    def __init__(self, next_tasks: list[Task] | None = None) -> None:
+        self._next_tasks = next_tasks or []
+
+    async def run(self, ctx: TaskContext) -> TaskResult:
+        _ = ctx
+        return TaskResult(status="succeeded", next_tasks=list(self._next_tasks))
+
+
 class RuntimeTests(unittest.TestCase):
     def test_execute_task_marks_failed_on_exception(self) -> None:
         repository = InMemoryTaskRepository()
@@ -92,6 +103,44 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(task1.status, "cancelled")
         self.assertEqual(task2.status, "cancelled")
         self.assertEqual(task3.status, "queued")
+
+    def test_execute_task_replaces_pending_task_with_same_dedupe_key(self) -> None:
+        repository = InMemoryTaskRepository()
+        registry = HandlerRegistry()
+        replacement_task = Task(
+            id="memory:next",
+            kind="memory_reflection",
+            payload={"user_input": "next", "assistant_output": "reply"},
+            run_after=20.0,
+            dedupe_key="memory_reflection:conversation_id:thread-1",
+            metadata={"replace_pending": True},
+        )
+        registry.register("main", _SuccessHandler(next_tasks=[replacement_task]))
+        runtime = Runtime(repository, registry)
+        repository.enqueue(
+            Task(
+                id="memory:old",
+                kind="memory_reflection",
+                payload={"user_input": "old", "assistant_output": "reply"},
+                run_after=15.0,
+                dedupe_key="memory_reflection:conversation_id:thread-1",
+                metadata={"replace_pending": True},
+            )
+        )
+        repository.enqueue(Task(id="task:main", kind="main", payload={}))
+
+        task = repository.lease_next_ready(now_unix=0.0)
+        assert task is not None
+        asyncio.run(runtime.execute_task(task, now_unix=0.0))
+
+        old_task = repository.get("memory:old")
+        new_task = repository.get("memory:next")
+        assert old_task is not None
+        assert new_task is not None
+        self.assertEqual(old_task.status, "cancelled")
+        self.assertIsNone(old_task.dedupe_key)
+        self.assertEqual(new_task.status, "queued")
+        self.assertEqual(new_task.dedupe_key, "memory_reflection:conversation_id:thread-1")
 
 
 if __name__ == "__main__":
