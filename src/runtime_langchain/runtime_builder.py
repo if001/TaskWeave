@@ -16,17 +16,17 @@ from runtime_core.tasks import TaskResultConfig
 from runtime_core.types.models import TaskContext
 from runtime_langchain.runnable_handler import BeforeInvoke, ConfigMapper
 from .research_handlers import MainResearchTaskHandler, WorkerResearchTaskHandler
-from .task_orchestrator import (
-    GraphInput,
-    TaskOrchestrator,
-)
+from .task_management_tools import build_task_management_tools
+from .task_orchestrator import GraphInput, TaskOrchestrator
 
 
 @dataclass(slots=True)
 class ResearchRuntimeBuilder:
+    _runtime: Runtime
     _orchestrator: TaskOrchestrator
 
     def __init__(self, runtime: Runtime, *, config: TaskResultConfig) -> None:
+        self._runtime = runtime
         self._orchestrator = TaskOrchestrator(
             config=config,
             recorder=runtime.recorder,
@@ -34,6 +34,12 @@ class ResearchRuntimeBuilder:
 
     def worker_tools(self) -> list[BaseTool]:
         return self._orchestrator.worker_request_tools()
+
+    def main_tools(self) -> list[BaseTool]:
+        return [
+            *self._orchestrator.worker_request_tools(),
+            *build_task_management_tools(self._runtime),
+        ]
 
     def mock_main_graph(
         self,

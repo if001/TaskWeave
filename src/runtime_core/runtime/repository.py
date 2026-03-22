@@ -71,6 +71,17 @@ class TaskRepository(Protocol):
 
     def get(self, task_id: str) -> Task | None: ...
 
+    def get_attempt(self, task_id: str) -> int: ...
+
+    def list_tasks(
+        self,
+        *,
+        statuses: list[TaskStatus] | None = None,
+        kinds: list[str] | None = None,
+        parent_task_id: str | None = None,
+        periodic_root_id: str | None = None,
+    ) -> list[Task]: ...
+
 
 class _TaskRepositoryBase(TaskRepository):
     def __init__(
@@ -141,6 +152,35 @@ class _TaskRepositoryBase(TaskRepository):
 
     def get(self, task_id: str) -> Task | None:
         return self._tasks.get(task_id)
+
+    def get_attempt(self, task_id: str) -> int:
+        return self._attempts.get(task_id, 0)
+
+    def list_tasks(
+        self,
+        *,
+        statuses: list[TaskStatus] | None = None,
+        kinds: list[str] | None = None,
+        parent_task_id: str | None = None,
+        periodic_root_id: str | None = None,
+    ) -> list[Task]:
+        status_filter = set(statuses) if statuses else None
+        kind_filter = set(kinds) if kinds else None
+        tasks: list[Task] = []
+        for task_id in self._order:
+            task = self._tasks[task_id]
+            if status_filter is not None and task.status not in status_filter:
+                continue
+            if kind_filter is not None and task.kind not in kind_filter:
+                continue
+            if parent_task_id is not None and task.parent_task_id != parent_task_id:
+                continue
+            if periodic_root_id is not None:
+                root_id = task.payload.get("periodic_root_id")
+                if root_id != periodic_root_id:
+                    continue
+            tasks.append(task)
+        return tasks
 
     def _require_task(self, task_id: str) -> Task:
         task = self._tasks.get(task_id)

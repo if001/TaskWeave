@@ -4,7 +4,6 @@ from __future__ import annotations
 # pyright: reportUnknownParameterType=false
 
 import os
-import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -16,20 +15,9 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langchain_core.tools import BaseTool
 
-from examples.deep_agent_runtime.web_tools import (
-    SearchToolResult,
-    missing_search_service_result,
-    resolve_simple_client_base_url,
-    web_list_and_store_artifact,
-    web_page_and_store_artifact,
-)
-from examples.deep_agent_runtime.artifact_tools import (
-    artifact_save,
-    artifact_search,
-)
+from examples.deep_agent_runtime.agent_tools import build_research_tools
 from examples.deep_agent_runtime.ollama_client import get_ollama_client
 from runtime_core.infra import get_logger
-from runtime_core.types import JsonValue, ensure_json_value
 from runtime_core.utils.time_utils import now_iso
 from runtime_langchain.task_orchestrator import GraphInput
 
@@ -177,18 +165,6 @@ def make_system_prompt(agent_id: str) -> str:
     )
 
 
-def _parse_raw_json(raw_json: str) -> JsonValue:
-    try:
-        parsed: object = json.loads(raw_json)
-    except json.JSONDecodeError:
-        parsed = None
-    coerced = ensure_json_value(parsed) if parsed is not None else None
-    if coerced is None:
-        fallback: dict[str, JsonValue] = {"raw_text": raw_json}
-        return fallback
-    return coerced
-
-
 @asynccontextmanager
 async def build_main_deep_agent_graph(
     model_name: str,
@@ -205,10 +181,9 @@ async def build_main_deep_agent_graph(
         StateBackend,
         StoreBackend,
     )
-    from langchain.tools import ToolRuntime, tool
+    from langchain.tools import ToolRuntime
     from langgraph.store.sqlite import AsyncSqliteStore
 
-    base_url = resolve_simple_client_base_url()
     store_path = workspace_dir / "langgraph_store.sqlite"
     checkpoint_path = workspace_dir / "langgraph_checkpoints.sqlite"
     artifact_save_dir = workspace_dir / "artifacts"
@@ -236,105 +211,11 @@ async def build_main_deep_agent_graph(
             routes=routes,
         )
 
-    def _artifact_dir() -> Path:
-        artifact_save_dir.mkdir(parents=True, exist_ok=True)
-        return artifact_save_dir
-
-    @tool("web_list")
-    def web_list(query: str, k: int = 5) -> SearchToolResult:
-        """Search the web and store the result list as an artifact.
-
-        Use to gather candidate sources before fetching full pages.
-        Args:
-            query: Search query string.
-            k: Max number of results to return (defaults to 5).
-        Returns:
-            SearchToolResult containing a summary and artifact path(s).
-        Side effects:
-            Writes the full response payload to /artifacts via the backend.
-        """
-        if base_url is None:
-            logger.error("base url not set")
-            return missing_search_service_result()
-        return web_list_and_store_artifact(
-            query=query,
-            k=k,
-            base_url=base_url,
-            artifact_dir=_artifact_dir(),
-        )
-
-    @tool("web_page")
-    def web_page(url: str) -> SearchToolResult:
-        """Fetch a web page, store its content as an artifact, and return metadata.
-
-        Use after selecting a promising source from web_list.
-        Args:
-            url: Absolute URL to fetch.
-        Returns:
-            SearchToolResult containing a summary and artifact path(s).
-        Side effects:
-            Writes the full page markdown to /artifacts via the backend.
-        """
-        if base_url is None:
-            logger.error("base url not set")
-            return missing_search_service_result()
-        return web_page_and_store_artifact(
-            url=url,
-            base_url=base_url,
-            artifact_dir=_artifact_dir(),
-        )
-
-    @tool("artifact_save")
-    def artifact_save_tool(
-        kind: str,
-        raw_json: str,
-    ) -> dict[str, str]:
-        """Save a raw JSON payload plus metadata into /artifacts.
-
-        Args:
-            kind: Artifact type label.
-            raw_json: JSON string to store as raw.json.
-        Returns:
-            Dict containing artifact_id and raw_path.
-        """
-        raw_payload = _parse_raw_json(raw_json)
-        meta = artifact_save(
-            kind=kind,
-            raw=raw_payload,
-            artifact_dir=_artifact_dir(),
-        )
-        return {
-            "artifact_id": meta["id"],
-            "raw_path": meta["raw_path"],
-        }
-
-    @tool("artifact_search")
-    def artifact_search_tool(
-        query: str, limit: int = 5
-    ) -> dict[str, list[dict[str, str]]]:
-        """Search artifact metadata and return top matches.
-
-        Args:
-            query: Search query.
-            limit: Max results.
-        Returns:
-            Dict with matches list. Each match has id, kind, title, summary, raw_path.
-        """
-        matches = artifact_search(
-            query=query,
-            limit=limit,
-        )
-        rendered = [
-            {
-                "id": item["id"],
-                "kind": item["kind"],
-                "title": item["title"],
-                "summary": item["summary"],
-                "raw_path": item["raw_path"],
-            }
-            for item in matches
-        ]
-        return {"matches": rendered}
+    artifact_save_dir.mkdir(parents=True, exist_ok=True)
+    research_tools = build_research_tools(
+        artifact_dir=artifact_save_dir,
+        log_missing_base_url=True,
+    )
 
     @after_model(can_jump_to=["end"])
     def check_message(state: AgentState, runtime: Runtime) -> dict[str, str]:
@@ -349,13 +230,7 @@ async def build_main_deep_agent_graph(
     ):
         await memory_store.setup()
         model = get_ollama_client(model_name=model_name)
-        all_tools = [
-            *tools,
-            web_list,
-            web_page,
-            artifact_save_tool,
-            artifact_search_tool,
-        ]
+        all_tools = [*tools, *research_tools]
         agent = create_deep_agent(
             model=model,
             tools=all_tools,

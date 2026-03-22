@@ -4,7 +4,7 @@ import asyncio
 from time import time
 
 from ..infra import get_logger
-from ..types import Task, TaskContext, TaskResult
+from ..types import Task, TaskContext, TaskResult, TaskStatus
 from .registry import HandlerRegistry
 from .repository import TaskRepository
 from ..tasks.worker_recorder import WorkerLaunchRecorder
@@ -42,6 +42,43 @@ class Runtime:
     def enqueue_periodic_tasks(self, now_unix: float) -> None:
         self._enqueue_periodic_tasks(now_unix)
 
+    def list_tasks(
+        self,
+        *,
+        statuses: list[TaskStatus] | None = None,
+        kinds: list[str] | None = None,
+        parent_task_id: str | None = None,
+        periodic_root_id: str | None = None,
+    ) -> list[Task]:
+        return self._repository.list_tasks(
+            statuses=statuses,
+            kinds=kinds,
+            parent_task_id=parent_task_id,
+            periodic_root_id=periodic_root_id,
+        )
+
+    def get_attempt(self, task_id: str) -> int:
+        return self._repository.get_attempt(task_id)
+
+    def cancel_task(self, task_id: str) -> bool:
+        task = self._repository.get(task_id)
+        if task is None or task.status in {"succeeded", "failed", "cancelled"}:
+            return False
+        task.metadata["cancellation_requested"] = True
+        if task.status == "queued":
+            self._repository.mark_status(task.id, "cancelled", reason="cancellation requested")
+        return True
+
+    def cancel_tasks_by_parent(self, parent_task_id: str) -> list[str]:
+        return self._cancel_tasks(
+            self.list_tasks(parent_task_id=parent_task_id)
+        )
+
+    def cancel_tasks_by_periodic_root(self, periodic_root_id: str) -> list[str]:
+        return self._cancel_tasks(
+            self.list_tasks(periodic_root_id=periodic_root_id)
+        )
+
     async def tick(self, now_unix: float | None = None) -> bool:
         now = now_unix if now_unix is not None else time()
         self._enqueue_periodic_tasks(now)
@@ -71,6 +108,13 @@ class Runtime:
         logger.info("Handler completed task id=%s status=%s", task.id, result.status)
         self._commit(task, result, now, attempt)
         return result
+
+    def _cancel_tasks(self, tasks: list[Task]) -> list[str]:
+        cancelled: list[str] = []
+        for task in tasks:
+            if self.cancel_task(task.id):
+                cancelled.append(task.id)
+        return cancelled
 
     def _enqueue_periodic_tasks(self, now_unix: float) -> None:
         if not self._periodic_rules:

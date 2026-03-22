@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-from pathlib import Path
 
 from dotenv import load_dotenv
 from langchain_core.messages import AnyMessage

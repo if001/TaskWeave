@@ -4,24 +4,13 @@ from __future__ import annotations
 # pyright: reportUnknownParameterType=false
 
 import os
-import json
 from pathlib import Path
 from tempfile import gettempdir
 
 from examples.deep_agent_runtime.ollama_client import get_ollama_client
-from examples.deep_agent_runtime.web_tools import (
-    SearchToolResult,
-    missing_search_service_result,
-    resolve_simple_client_base_url,
-    web_list_and_store_artifact,
-    web_page_and_store_artifact,
-)
-from examples.deep_agent_runtime.artifact_tools import (
-    artifact_save,
-    artifact_search,
-)
+from examples.deep_agent_runtime.agent_tools import build_research_tools
 
-from runtime_core.types import JsonValue, Message, ensure_json_value
+from runtime_core.types import Message
 from langgraph.graph.state import CompiledStateGraph, StateGraph, END
 from runtime_langchain.task_orchestrator import GraphInput
 from langchain_core.messages import AnyMessage
@@ -49,7 +38,9 @@ def resolve_deepagent_artifact_dir(env_name: str) -> Path:
     return path
 
 
-def _build_echo_worker_graph() -> CompiledStateGraph[GraphInput, None, GraphInput, GraphInput]:
+def _build_echo_worker_graph() -> CompiledStateGraph[
+    GraphInput, None, GraphInput, GraphInput
+]:
     def _respond(state: GraphInput) -> GraphInput:
         query = _extract_last_message_text(state["messages"])
         return GraphInput(
@@ -91,16 +82,16 @@ def _extract_last_message_text(messages: list[Message | AnyMessage]) -> str:
     return str(getattr(message, "content", "")).strip()
 
 
-def _parse_raw_json(raw_json: str) -> JsonValue:
-    try:
-        parsed: object = json.loads(raw_json)
-    except json.JSONDecodeError:
-        parsed = None
-    coerced = ensure_json_value(parsed) if parsed is not None else None
-    if coerced is None:
-        fallback: dict[str, JsonValue] = {"raw_text": raw_json}
-        return fallback
-    return coerced
+system_prompt = (
+    "あなたはworker agentです。\n"
+    "main agentから依頼文が入力されます。依頼に従い適切な出力を行ってください。\n"
+    "依頼文には以下が含まれます。\n"
+    "成功条件, 制約/対象範囲, 成果物の形式, 必須項目(結論・根拠・未解決), 不足時の扱い\n\n"
+    "## 回答のガイドライン\n"
+    "- 複数のツールから得られた断片的な情報を整理し、一貫性のある回答にまとめてください。\n"
+    "- 根拠の提示: ツールで得られた具体的な事実（数値、日付、名称など）を引用してください。\n"
+    "- 出力はユーザーへの返答テキストのみとすること。JSONや内部状態の列挙は禁止。\n"
+)
 
 
 def _build_deepagent_worker_graph(
@@ -113,10 +104,9 @@ def _build_deepagent_worker_graph(
         StateBackend,
         StoreBackend,
     )
-    from langchain.tools import ToolRuntime, tool
+    from langchain.tools import ToolRuntime
     from langgraph.store.memory import InMemoryStore
 
-    base_url = resolve_simple_client_base_url()
     memory_store = InMemoryStore()
     artifacts_backend = FilesystemBackend(root_dir=str(artifact_dir), virtual_mode=True)
 
@@ -129,95 +119,13 @@ def _build_deepagent_worker_graph(
             },
         )
 
-    @tool("web_list")
-    def web_list(query: str, k: int = 5) -> SearchToolResult:
-        """Search the web and store the result list as an artifact.
-
-        Use to gather candidate sources before fetching full pages.
-        Args:
-            query: Search query string.
-            k: Max number of results to return (defaults to 5).
-        Returns:
-            SearchToolResult containing a summary and artifact path(s).
-        Side effects:
-            Writes the full response payload to /artifacts via the backend.
-        """
-        if base_url is None:
-            return missing_search_service_result()
-        return web_list_and_store_artifact(
-            query=query,
-            k=k,
-            base_url=base_url,
-            artifact_dir=artifact_dir,
-        )
-
-    @tool("web_page")
-    def web_page(url: str) -> SearchToolResult:
-        """Fetch a web page, store its content as an artifact, and return metadata.
-
-        Use after selecting a promising source from web_list.
-        Args:
-            url: Absolute URL to fetch.
-        Returns:
-            SearchToolResult containing a summary and artifact path(s).
-        Side effects:
-            Writes the full page markdown to /artifacts via the backend.
-        """
-        if base_url is None:
-            return missing_search_service_result()
-        return web_page_and_store_artifact(
-            url=url,
-            base_url=base_url,
-            artifact_dir=artifact_dir,
-        )
-
-    @tool("artifact_save")
-    def artifact_save_tool(
-        kind: str,
-        raw_json: str,
-    ) -> dict[str, str]:
-        """Save a raw JSON payload plus metadata into /artifacts."""
-        raw_payload = _parse_raw_json(raw_json)
-        meta = artifact_save(
-            kind=kind,
-            raw=raw_payload,
-            artifact_dir=artifact_dir,
-        )
-        return {
-            "artifact_id": meta["id"],
-            "raw_path": meta["raw_path"],
-        }
-
-    @tool("artifact_search")
-    def artifact_search_tool(query: str, limit: int = 5) -> dict[str, list[dict[str, str]]]:
-        """Search artifact metadata and return top matches."""
-        matches = artifact_search(
-            query=query,
-            limit=limit,
-        )
-        rendered = [
-            {
-                "id": item["id"],
-                "kind": item["kind"],
-                "title": item["title"],
-                "summary": item["summary"],
-                "raw_path": item["raw_path"],
-            }
-            for item in matches
-        ]
-        return {"matches": rendered}
+    research_tools = build_research_tools(artifact_dir=artifact_dir)
 
     model = get_ollama_client(model_name=model_name)
     agent = create_deep_agent(
         model=model,
-        tools=[web_list, web_page, artifact_save_tool, artifact_search_tool],
-        system_prompt=(
-            "You are a focused deep-research worker agent. "
-            "Use web_list to collect candidate sources and web_page to fetch details. "
-            "Do not keep full search or page payloads in chat context. "
-            "Persist them in artifact files and return concise summaries with artifact paths. "
-            "Use /memories/ for long-term memory that should persist across threads."
-        ),
+        tools=research_tools,
+        system_prompt=system_prompt,
         backend=make_backend,
         store=memory_store,
     )

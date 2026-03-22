@@ -5,19 +5,11 @@ from typing import Callable
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 
-from runtime_core.tasks import WorkerLaunchRecorder
-from runtime_core.tasks import to_delayed_plans, to_periodic_plans
+from runtime_core.tasks import WorkerLaunchRecorder, to_delayed_plans, to_periodic_plans
 from runtime_core.types import TaskContext, TaskResult
-from .runnable_handler import (
-    AfterInvoke,
-    BeforeInvoke,
-    ConfigMapper,
-    RunnableTaskHandler,
-)
-from .task_orchestrator import (
-    GraphInput,
-    TaskOrchestrator,
-)
+
+from .runnable_handler import BeforeInvoke, ConfigMapper, RunnableTaskHandler
+from .task_orchestrator import GraphInput, TaskOrchestrator
 
 
 def _default_main_prompt(topic: str) -> str:
@@ -35,90 +27,30 @@ def _default_agent_config(ctx: TaskContext) -> RunnableConfig | None:
     return None
 
 
-class MainResearchTaskHandler(RunnableTaskHandler):
-    def __init__(
-        self,
-        runnable: CompiledStateGraph[GraphInput, None, GraphInput, GraphInput],
-        orchestrator: TaskOrchestrator,
-        prompt_builder: Callable[[str], str] | None = None,
-        config_mapper: ConfigMapper[RunnableConfig] | None = None,
-        before_invoke: BeforeInvoke[GraphInput] | None = None,
-        after_invoke: Callable[[TaskContext, GraphInput], GraphInput] | None = None,
-    ) -> None:
-        prompt_builder = prompt_builder or _default_main_prompt
-
-        def _input(ctx: TaskContext) -> GraphInput:
-            topic = str(ctx.task.payload["topic"])
-            speaker_type = str(ctx.task.metadata.get("speaker_type", "unknown"))
-            prompt = (
-                f"[speaker_type={speaker_type}]\n"
-                f"{prompt_builder(topic)}"
-            )
-
-            return GraphInput(
-                messages=[{"role": "user", "content": prompt}],
-            )
-
-        def _before(ctx: TaskContext, inp: GraphInput) -> GraphInput:
-            recorder = orchestrator.recorder
-            recorder.drain()
-            _record_scheduled_workers(ctx, recorder)
-            return inp
-
-        def _output(ctx: TaskContext, raw: object) -> TaskResult:
-            _ = ctx
-            normalized = _coerce_graph_output(raw)
-            return orchestrator.build_main_result(ctx, normalized)
-
-        def _after(ctx: TaskContext, raw: object) -> object:
-            normalized = _coerce_graph_output(raw)
-            if after_invoke is None:
-                return normalized
-            return after_invoke(ctx, normalized)
-
-        super().__init__(
-            ainvoke=runnable.ainvoke,
-            input_mapper=_input,
-            output_mapper=_output,
-            config_mapper=config_mapper or _default_agent_config,
-            before_invoke=before_invoke or _before,
-            after_invoke=_after,
-        )
+def _speaker_type(ctx: TaskContext) -> str:
+    return str(ctx.task.metadata.get("speaker_type", "unknown"))
 
 
-class WorkerResearchTaskHandler(RunnableTaskHandler):
-    def __init__(
-        self,
-        runnable: CompiledStateGraph[GraphInput, None, GraphInput, GraphInput],
-        orchestrator: TaskOrchestrator,
-        prompt_builder: Callable[[str], str] | None = None,
-        config_mapper: ConfigMapper[RunnableConfig] | None = None,
-        before_invoke: BeforeInvoke[GraphInput] | None = None,
-        after_invoke: Callable[[TaskContext, GraphInput], GraphInput] | None = None,
-    ) -> None:
-        prompt_builder = prompt_builder or _default_worker_prompt
+def _user_message(prompt: str) -> GraphInput:
+    return GraphInput(messages=[{"role": "user", "content": prompt}])
 
-        def _input(ctx: TaskContext) -> GraphInput:
-            query = str(ctx.task.payload["query"])
-            speaker_type = str(ctx.task.metadata.get("speaker_type", "unknown"))
-            prompt = f"[speaker_type={speaker_type}]\n{prompt_builder(query)}"
-            return GraphInput(
-                messages=[{"role": "user", "content": prompt}],
-            )
 
-        def _output(ctx: TaskContext, raw: object) -> TaskResult:
-            _ = ctx
-            normalized = _coerce_graph_output(raw)
-            return orchestrator.build_worker_result(ctx, normalized)
+def _build_main_input(
+    ctx: TaskContext,
+    prompt_builder: Callable[[str], str],
+) -> GraphInput:
+    topic = str(ctx.task.payload["topic"])
+    prompt = f"[speaker_type={_speaker_type(ctx)}]\n{prompt_builder(topic)}"
+    return _user_message(prompt)
 
-        super().__init__(
-            ainvoke=runnable.ainvoke,
-            input_mapper=_input,
-            output_mapper=_output,
-            config_mapper=config_mapper or _default_agent_config,
-            before_invoke=before_invoke,
-            after_invoke=_wrap_after_invoke(after_invoke),
-        )
+
+def _build_worker_input(
+    ctx: TaskContext,
+    prompt_builder: Callable[[str], str],
+) -> GraphInput:
+    query = str(ctx.task.payload["query"])
+    prompt = f"[speaker_type={_speaker_type(ctx)}]\n{prompt_builder(query)}"
+    return _user_message(prompt)
 
 
 def _record_scheduled_workers(ctx: TaskContext, recorder: WorkerLaunchRecorder) -> None:
@@ -133,6 +65,16 @@ def _record_scheduled_workers(ctx: TaskContext, recorder: WorkerLaunchRecorder) 
         )
 
 
+def _prepare_main_input(
+    ctx: TaskContext,
+    inp: GraphInput,
+    recorder: WorkerLaunchRecorder,
+) -> GraphInput:
+    recorder.drain()
+    _record_scheduled_workers(ctx, recorder)
+    return inp
+
+
 def _coerce_graph_output(raw: object) -> GraphInput:
     if isinstance(raw, dict):
         messages = raw.get("messages")
@@ -141,14 +83,73 @@ def _coerce_graph_output(raw: object) -> GraphInput:
     return GraphInput(messages=[{"role": "assistant", "content": str(raw).strip()}])
 
 
-def _wrap_after_invoke(
+def _apply_after_invoke(
+    ctx: TaskContext,
+    raw: object,
     after_invoke: Callable[[TaskContext, GraphInput], GraphInput] | None,
-) -> AfterInvoke[object] | None:
+) -> object:
+    normalized = _coerce_graph_output(raw)
     if after_invoke is None:
-        return None
+        return normalized
+    return after_invoke(ctx, normalized)
 
-    def _wrapped(ctx: TaskContext, raw: object) -> object:
-        normalized = _coerce_graph_output(raw)
-        return after_invoke(ctx, normalized)
 
-    return _wrapped
+def _build_main_result(
+    ctx: TaskContext,
+    raw: object,
+    orchestrator: TaskOrchestrator,
+) -> TaskResult:
+    return orchestrator.build_main_result(ctx, _coerce_graph_output(raw))
+
+
+def _build_worker_result(
+    ctx: TaskContext,
+    raw: object,
+    orchestrator: TaskOrchestrator,
+) -> TaskResult:
+    return orchestrator.build_worker_result(ctx, _coerce_graph_output(raw))
+
+
+class MainResearchTaskHandler(RunnableTaskHandler):
+    def __init__(
+        self,
+        runnable: CompiledStateGraph[GraphInput, None, GraphInput, GraphInput],
+        orchestrator: TaskOrchestrator,
+        prompt_builder: Callable[[str], str] | None = None,
+        config_mapper: ConfigMapper[RunnableConfig] | None = None,
+        before_invoke: BeforeInvoke[GraphInput] | None = None,
+        after_invoke: Callable[[TaskContext, GraphInput], GraphInput] | None = None,
+    ) -> None:
+        build_prompt = prompt_builder or _default_main_prompt
+        prepare_input = before_invoke or (
+            lambda ctx, inp: _prepare_main_input(ctx, inp, orchestrator.recorder)
+        )
+        super().__init__(
+            ainvoke=runnable.ainvoke,
+            input_mapper=lambda ctx: _build_main_input(ctx, build_prompt),
+            output_mapper=lambda ctx, raw: _build_main_result(ctx, raw, orchestrator),
+            config_mapper=config_mapper or _default_agent_config,
+            before_invoke=prepare_input,
+            after_invoke=lambda ctx, raw: _apply_after_invoke(ctx, raw, after_invoke),
+        )
+
+
+class WorkerResearchTaskHandler(RunnableTaskHandler):
+    def __init__(
+        self,
+        runnable: CompiledStateGraph[GraphInput, None, GraphInput, GraphInput],
+        orchestrator: TaskOrchestrator,
+        prompt_builder: Callable[[str], str] | None = None,
+        config_mapper: ConfigMapper[RunnableConfig] | None = None,
+        before_invoke: BeforeInvoke[GraphInput] | None = None,
+        after_invoke: Callable[[TaskContext, GraphInput], GraphInput] | None = None,
+    ) -> None:
+        build_prompt = prompt_builder or _default_worker_prompt
+        super().__init__(
+            ainvoke=runnable.ainvoke,
+            input_mapper=lambda ctx: _build_worker_input(ctx, build_prompt),
+            output_mapper=lambda ctx, raw: _build_worker_result(ctx, raw, orchestrator),
+            config_mapper=config_mapper or _default_agent_config,
+            before_invoke=before_invoke,
+            after_invoke=lambda ctx, raw: _apply_after_invoke(ctx, raw, after_invoke),
+        )

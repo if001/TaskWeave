@@ -17,7 +17,7 @@ def build_worker_request_tools(recorder: WorkerLaunchRecorder) -> list[BaseTool]
 
         Use when the query needs background research right away.
         Args:
-            query: Research topic or question to hand off to the worker.
+            query: workerが実行するタスク(目的/成功条件, 制約/対象範囲, 成果物の形式, 必須項目(結論・根拠・未解決)を含めること)
         Returns:
             A status string indicating the request was queued.
         Side effects:
@@ -32,7 +32,7 @@ def build_worker_request_tools(recorder: WorkerLaunchRecorder) -> list[BaseTool]
 
         Use when the work should start later (e.g., cooldown or scheduled check).
         Args:
-            query: Research topic or question for the worker.
+            query: workerが実行するタスク(目的/成功条件, 制約/対象範囲, 成果物の形式, 必須項目(結論・根拠・未解決)を含めること)
             delay_seconds: Seconds from now to start the task (will be clamped to >= 0).
         Returns:
             A status string indicating the delayed request was queued.
@@ -52,7 +52,7 @@ def build_worker_request_tools(recorder: WorkerLaunchRecorder) -> list[BaseTool]
 
         Use for recurring research (e.g., monitoring a topic).
         Args:
-            query: Research topic or question for the worker.
+            query: workerが実行するタスク(目的/成功条件, 制約/対象範囲, 成果物の形式, 必須項目(結論・根拠・未解決)を含めること)
             start_in_seconds: Seconds from now to the first run (clamped to >= 0).
             interval_seconds: Seconds between runs (clamped to >= 1).
             repeat_count: Number of runs (clamped to >= 1).

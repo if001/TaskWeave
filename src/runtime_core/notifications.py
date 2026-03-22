@@ -16,6 +16,7 @@ class NotificationPayload(TypedDict, total=False):
     conversation_id: str
     speaker_id: str
     speaker_type: str
+    root_trace_id: str
     bot_hops: int
 
 
@@ -57,6 +58,7 @@ def notification_payload_from_task_payload(
     _set_str_if_present(result, "conversation_id", payload.get("conversation_id"))
     _set_str_if_present(result, "speaker_id", payload.get("speaker_id"))
     _set_str_if_present(result, "speaker_type", payload.get("speaker_type"))
+    _set_str_if_present(result, "root_trace_id", payload.get("root_trace_id"))
     return result
 
 
@@ -74,6 +76,7 @@ def extract_notification_metadata(metadata: dict[str, JsonValue]) -> Notificatio
     _set_str_if_present(result, "conversation_id", metadata.get("conversation_id"))
     _set_str_if_present(result, "speaker_id", metadata.get("speaker_id"))
     _set_str_if_present(result, "speaker_type", metadata.get("speaker_type"))
+    _set_str_if_present(result, "root_trace_id", metadata.get("root_trace_id"))
     return result
 
 

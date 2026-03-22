@@ -9,7 +9,6 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from tempfile import gettempdir
 from socket import timeout as SocketTimeout
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -55,7 +54,7 @@ class UrlDigestService:
         self._artifact_dir = self._resolve_artifact_dir()
 
     def _resolve_artifact_dir(self) -> Path:
-        root_dir = Path(".state") / _AGENT_ID
+        root_dir = Path(".state") / _AGENT_ID / "artifacts"
         root_dir.mkdir(parents=True, exist_ok=True)
         logger.info("Artifact root directory: %s", root_dir)
         return root_dir

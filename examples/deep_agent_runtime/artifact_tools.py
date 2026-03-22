@@ -167,9 +167,9 @@ def _render_payload(payload: JsonValue) -> str:
     return trimmed[:_ARTIFACT_MAX_INPUT_CHARS]
 
 
-def _call_ollama(prompt: str) -> str:
+def _invoke_model(prompt: str, *, model_name: str) -> str:
     try:
-        model = _get_artifact_model()
+        model = get_ollama_client(model_name=model_name)
         message = model.invoke([{"role": "user", "content": prompt}])
     except Exception:
         return ""
@@ -179,16 +179,18 @@ def _call_ollama(prompt: str) -> str:
     return str(content).strip()
 
 
-@lru_cache(maxsize=1)
-def _get_artifact_model():
-    model_name = os.getenv(_ARTIFACT_MODEL_ENV, "gpt-oss:20b")
-    return get_ollama_client(model_name=model_name)
+def _call_ollama(prompt: str) -> str:
+    return _invoke_model(prompt, model_name=_artifact_model_name())
 
 
 @lru_cache(maxsize=1)
-def _get_rerank_model():
-    model_name = os.getenv(_ARTIFACT_RERANK_MODEL_ENV, "gpt-oss:20b")
-    return get_ollama_client(model_name=model_name)
+def _artifact_model_name() -> str:
+    return os.getenv(_ARTIFACT_MODEL_ENV, "gpt-oss:20b")
+
+
+@lru_cache(maxsize=1)
+def _rerank_model_name() -> str:
+    return os.getenv(_ARTIFACT_RERANK_MODEL_ENV, "gpt-oss:20b")
 
 
 @lru_cache(maxsize=1)
@@ -352,15 +354,7 @@ def _rerank_with_ollama(
 
 
 def _call_rerank_model(prompt: str) -> str:
-    try:
-        model = _get_rerank_model()
-        message = model.invoke([{"role": "user", "content": prompt}])
-    except Exception:
-        return ""
-    content = getattr(message, "content", "")
-    if isinstance(content, str):
-        return content.strip()
-    return str(content).strip()
+    return _invoke_model(prompt, model_name=_rerank_model_name())
 
 
 def _fallback_title(kind: str) -> str:
