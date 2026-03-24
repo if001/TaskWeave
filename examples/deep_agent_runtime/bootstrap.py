@@ -13,7 +13,7 @@ from langfuse.langchain import CallbackHandler
 from langgraph.graph.state import CompiledStateGraph, RunnableConfig
 
 from .main_agent_runnables import build_main_deep_agent_graph
-from .memory_reflection import build_langmem_memory_hooks
+from .memory_reflection import LangMemMemoryHooks
 from .worker_agent_runnables import (
     build_worker_agent_graph,
     resolve_deepagent_artifact_dir,
@@ -81,8 +81,8 @@ async def build_example_runtime(
             notification_task_kind=TASK_KIND_NOTIFICATION,
         ),
     )
-    memory_hooks = build_langmem_memory_hooks(
-        resolved_workspace_dir,
+    memory_hooks = LangMemMemoryHooks(
+        workspace_dir=resolved_workspace_dir,
         model_name=os.getenv(_MODEL_ENV, DEFAULT_MODEL_NAME),
         delay_seconds=_MEMORY_REFLECTION_DELAY_SECONDS,
     )
