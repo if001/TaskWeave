@@ -19,6 +19,7 @@ dependencies = [
     "langfuse>=4.0.0",
     "langchain-postgres>=0.0.12",
     "psycopg2-binary>=2.9.11",
+    "langmem",
 ]
 
 

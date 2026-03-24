@@ -6,8 +6,8 @@ from pathlib import Path
 from langchain.tools import tool
 from langchain_core.tools import BaseTool
 
-from examples.deep_agent_runtime.artifact_tools import artifact_save, artifact_search
-from examples.deep_agent_runtime.web_tools import (
+from .artifact_tools import artifact_save, artifact_search
+from .web_tools import (
     SearchToolResult,
     missing_search_service_result,
     resolve_simple_client_base_url,

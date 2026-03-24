@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable
+from inspect import isawaitable
 from typing import Callable, TypeVar
 
 from runtime_core.types import TaskContext, TaskResult
@@ -12,9 +13,15 @@ ConfigT = TypeVar("ConfigT", contravariant=True)
 InputMapper = Callable[[TaskContext], InputT]
 OutputMapper = Callable[[TaskContext, OutputT], TaskResult]
 ConfigMapper = Callable[[TaskContext], ConfigT | None]
-BeforeInvoke = Callable[[TaskContext, InputT], InputT]
-AfterInvoke = Callable[[TaskContext, OutputT], OutputT]
+BeforeInvoke = Callable[[TaskContext, InputT], InputT | Awaitable[InputT]]
+AfterInvoke = Callable[[TaskContext, OutputT], OutputT | Awaitable[OutputT]]
 AinvokeCallable = Callable[..., Awaitable[OutputT]]
+
+
+async def _resolve_maybe_awaitable(value: InputT | Awaitable[InputT]) -> InputT:
+    if isawaitable(value):
+        return await value
+    return value
 
 
 def _default_config_mapper(_: TaskContext) -> None:
@@ -47,6 +54,9 @@ class RunnableTaskHandler:
         self._after_invoke = after_invoke or _default_after_invoke
 
     async def run(self, ctx: TaskContext) -> TaskResult:
-        inp = self._before_invoke(ctx, self._input_mapper(ctx))
-        raw = await self._ainvoke(inp, config=self._config_mapper(ctx))
-        return self._output_mapper(ctx, self._after_invoke(ctx, raw))
+        resolved_input = await _resolve_maybe_awaitable(
+            self._before_invoke(ctx, self._input_mapper(ctx))
+        )
+        raw = await self._ainvoke(resolved_input, config=self._config_mapper(ctx))
+        resolved_output = await _resolve_maybe_awaitable(self._after_invoke(ctx, raw))
+        return self._output_mapper(ctx, resolved_output)

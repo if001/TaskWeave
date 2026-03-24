@@ -4,10 +4,10 @@ import asyncio
 from time import time
 
 from ..infra import get_logger
+from ..tasks.worker_recorder import WorkerLaunchRecorder
 from ..types import Task, TaskContext, TaskResult, TaskStatus
 from .registry import HandlerRegistry
 from .repository import TaskRepository
-from ..tasks.worker_recorder import WorkerLaunchRecorder
 from .scheduler import PeriodicRule, RetryPolicy, TaskScheduler
 
 
@@ -66,7 +66,9 @@ class Runtime:
             return False
         task.metadata["cancellation_requested"] = True
         if task.status == "queued":
-            self._repository.mark_status(task.id, "cancelled", reason="cancellation requested")
+            self._repository.mark_status(
+                task.id, "cancelled", reason="cancellation requested"
+            )
         return True
 
     def cancel_tasks_by_parent(self, parent_task_id: str) -> list[str]:
@@ -110,14 +112,12 @@ class Runtime:
         *,
         parent_task_id: str | None = None,
         periodic_root_id: str | None = None,
-        dedupe_key: str | None = None,
         statuses: list[TaskStatus] | None = None,
     ) -> list[str]:
         tasks = self._repository.list_tasks(
             statuses=statuses,
             parent_task_id=parent_task_id,
             periodic_root_id=periodic_root_id,
-            dedupe_key=dedupe_key,
         )
         cancelled: list[str] = []
         for task in tasks:
@@ -128,26 +128,13 @@ class Runtime:
     def _enqueue_periodic_tasks(self, now_unix: float) -> None:
         if not self._periodic_rules:
             return
-        periodic_tasks = self._scheduler.generate_periodic_tasks(now_unix, self._periodic_rules)
+        periodic_tasks = self._scheduler.generate_periodic_tasks(
+            now_unix, self._periodic_rules
+        )
         self._repository.enqueue_many(periodic_tasks)
 
     def _enqueue_next_tasks(self, tasks: list[Task]) -> None:
-        for task in tasks:
-            self._replace_pending_task(task)
-            self._repository.enqueue(task)
-
-    def _replace_pending_task(self, task: Task) -> None:
-        if not _should_replace_pending(task):
-            return
-        dedupe_key = task.dedupe_key
-        if dedupe_key is None:
-            return
-        pending_task_ids = self._cancel_matching_tasks(
-            statuses=["queued", "leased"],
-            dedupe_key=dedupe_key,
-        )
-        for pending_task_id in pending_task_ids:
-            self._repository.clear_dedupe_key(pending_task_id)
+        self._repository.enqueue_many(tasks)
 
     def _start_task(self, task: Task) -> int:
         self._repository.mark_status(task.id, "running")
@@ -206,7 +193,9 @@ class Runtime:
     def _commit(self, task: Task, result: TaskResult, now_unix: float, attempt: int) -> None:
         self._enqueue_next_tasks(result.next_tasks)
         if result.next_tasks:
-            logger.info("Enqueued next tasks count=%s parent=%s", len(result.next_tasks), task.id)
+            logger.info(
+                "Enqueued next tasks count=%s parent=%s", len(result.next_tasks), task.id
+            )
 
         if result.status == "succeeded":
             self._repository.set_run_after(task.id, None)
@@ -221,7 +210,9 @@ class Runtime:
 
         self._schedule_retry(task.id, now_unix, attempt, result.error)
 
-    def _schedule_retry(self, task_id: str, now_unix: float, attempt: int, reason: str | None) -> None:
+    def _schedule_retry(
+        self, task_id: str, now_unix: float, attempt: int, reason: str | None
+    ) -> None:
         run_after = self._scheduler.next_retry_time(
             now_unix=now_unix,
             attempt=attempt,
@@ -229,7 +220,13 @@ class Runtime:
         )
         self._repository.set_run_after(task_id, run_after)
         self._repository.mark_status(task_id, "queued", reason=reason or "retry")
-        logger.warning("Task retry scheduled id=%s attempt=%s run_after=%s reason=%s", task_id, attempt, run_after, reason or "retry")
+        logger.warning(
+            "Task retry scheduled id=%s attempt=%s run_after=%s reason=%s",
+            task_id,
+            attempt,
+            run_after,
+            reason or "retry",
+        )
 
     def _resolve_deadline(self, task: Task) -> float | None:
         value = task.metadata.get("deadline_unix")
@@ -251,8 +248,3 @@ class Runtime:
         if deadline_unix is None:
             return False
         return now_unix >= deadline_unix
-
-
-def _should_replace_pending(task: Task) -> bool:
-    replace_pending = task.metadata.get("replace_pending")
-    return isinstance(replace_pending, bool) and replace_pending and task.dedupe_key is not None

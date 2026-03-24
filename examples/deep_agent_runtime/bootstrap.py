@@ -12,9 +12,9 @@ from langfuse import get_client
 from langfuse.langchain import CallbackHandler
 from langgraph.graph.state import CompiledStateGraph, RunnableConfig
 
-from examples.deep_agent_runtime.main_agent_runnables import build_main_deep_agent_graph
-from examples.deep_agent_runtime.memory_reflection import MemoryReflectionTaskHandler
-from examples.deep_agent_runtime.worker_agent_runnables import (
+from .main_agent_runnables import build_main_deep_agent_graph
+from .memory_reflection import build_langmem_memory_hooks
+from .worker_agent_runnables import (
     build_worker_agent_graph,
     resolve_deepagent_artifact_dir,
 )
@@ -32,12 +32,12 @@ from runtime_core.tasks import TaskResultConfig
 from runtime_core.types import Task
 from runtime_core.types.models import TaskContext
 from runtime_langchain.runtime_builder import ResearchRuntimeBuilder
+from runtime_langchain.task_context_config import build_langgraph_configurable
 from runtime_langchain.task_orchestrator import GraphInput
 
 TASK_KIND_MAIN_RESEARCH = "main_research"
 TASK_KIND_WORKER_RESEARCH = "worker_research"
 TASK_KIND_NOTIFICATION = "notification"
-TASK_KIND_MEMORY_REFLECTION = "memory_reflection"
 DEFAULT_MODEL_NAME = "gpt-oss:20b"
 _REAL_AGENT_ENV = "USE_REAL_DEEP_AGENT"
 _MODEL_ENV = "MODEL_NAME"
@@ -45,7 +45,7 @@ _BACKEND_ENV = "REAL_AGENT_BACKEND"
 _BACKEND_LANGCHAIN = "langchain"
 _BACKEND_DEEPAGENT = "deepagent"
 _DEEPAGENT_ARTIFACT_DIR_ENV = "DEEPAGENT_ARTIFACT_DIR"
-_MEMORY_REFLECTION_DELAY_SECONDS = 5.0
+_MEMORY_REFLECTION_DELAY_SECONDS = 10 * 60
 
 logger = get_logger(__name__)
 
@@ -76,35 +76,51 @@ async def build_example_runtime(
     )
     builder = ResearchRuntimeBuilder(
         runtime,
-        config=_task_result_config(),
+        config=TaskResultConfig(
+            worker_task_kind=TASK_KIND_WORKER_RESEARCH,
+            notification_task_kind=TASK_KIND_NOTIFICATION,
+        ),
+    )
+    memory_hooks = build_langmem_memory_hooks(
+        resolved_workspace_dir,
+        model_name=os.getenv(_MODEL_ENV, DEFAULT_MODEL_NAME),
+        delay_seconds=_MEMORY_REFLECTION_DELAY_SECONDS,
     )
 
-    async with _build_main_agent_graph(
-        builder,
-        workspace_dir=resolved_workspace_dir,
-        agent_id=agent_id,
-    ) as main_graph:
+    async with (
+        _build_main_agent_graph(
+            builder,
+            workspace_dir=resolved_workspace_dir,
+            agent_id=agent_id,
+        ) as main_graph,
+    ):
         builder.register_main(
             registry,
             kind=TASK_KIND_MAIN_RESEARCH,
             runnable=main_graph,
             config_mapper=_build_config_mapper(agent_id),
+            before_invoke=memory_hooks.before_invoke,
+            after_invoke=memory_hooks.after_invoke,
         )
         builder.register_worker(
             registry,
             kind=TASK_KIND_WORKER_RESEARCH,
-            runnable=_build_worker_graph(workspace_dir=resolved_workspace_dir),
+            runnable=build_worker_agent_graph(
+                use_real_agent=_is_real_agent_enabled(),
+                backend=_resolve_real_agent_backend(),
+                model_name=os.getenv(_MODEL_ENV, DEFAULT_MODEL_NAME),
+                workspace_dir=resolved_workspace_dir,
+            ),
         )
         builder.register_notification(
             registry,
             kind=TASK_KIND_NOTIFICATION,
             sender=notification_sender,
         )
-        registry.register(
-            TASK_KIND_MEMORY_REFLECTION,
-            MemoryReflectionTaskHandler(workspace_dir=resolved_workspace_dir),
-        )
-        yield ExampleRuntimeBundle(runtime=runtime, repository=resolved_repository)
+        try:
+            yield ExampleRuntimeBundle(runtime=runtime, repository=resolved_repository)
+        finally:
+            memory_hooks.shutdown()
 
 
 def seed_example_task(
@@ -127,19 +143,10 @@ def build_example_task_id(*, turn: int) -> str:
     return f"example:main:{turn}:{uuid.uuid4().hex}"
 
 
-def _task_result_config() -> TaskResultConfig:
-    return TaskResultConfig(
-        worker_task_kind=TASK_KIND_WORKER_RESEARCH,
-        notification_task_kind=TASK_KIND_NOTIFICATION,
-        memory_reflection_task_kind=TASK_KIND_MEMORY_REFLECTION,
-        memory_reflection_delay_seconds=_MEMORY_REFLECTION_DELAY_SECONDS,
-    )
-
-
 def _build_config_mapper(agent_id: str):
     def config_mapper(ctx: TaskContext) -> RunnableConfig:
         config: RunnableConfig = {
-            "configurable": _build_configurable(ctx),
+            "configurable": build_langgraph_configurable(ctx),
             "recursion_limit": 50,
         }
         callbacks = _build_callbacks(ctx, agent_id)
@@ -148,14 +155,6 @@ def _build_config_mapper(agent_id: str):
         return config
 
     return config_mapper
-
-
-def _build_configurable(ctx: TaskContext) -> dict[str, str]:
-    thread_id = ctx.task.metadata.get("thread_id")
-    configurable: dict[str, str] = {"thread_id": "user-1"}
-    if isinstance(thread_id, str) and thread_id.strip():
-        configurable["thread_id"] = thread_id
-    return configurable
 
 
 def _build_callbacks(ctx: TaskContext, agent_id: str) -> list[BaseCallbackHandler]:
@@ -209,17 +208,6 @@ async def _build_main_agent_graph(
         agent_id=agent_id,
     ) as graph:
         yield graph
-
-
-def _build_worker_graph(
-    *, workspace_dir: Path
-) -> CompiledStateGraph[GraphInput, None, GraphInput, GraphInput]:
-    return build_worker_agent_graph(
-        use_real_agent=_is_real_agent_enabled(),
-        backend=_resolve_real_agent_backend(),
-        model_name=os.getenv(_MODEL_ENV, DEFAULT_MODEL_NAME),
-        workspace_dir=workspace_dir,
-    )
 
 
 def _resolve_workspace_dir(workspace_dir: Path | None) -> Path:

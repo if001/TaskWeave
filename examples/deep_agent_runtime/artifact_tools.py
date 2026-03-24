@@ -13,7 +13,7 @@ from langchain_ollama import OllamaEmbeddings
 from langchain_postgres.v2.engine import PGEngine
 from langchain_postgres.v2.vectorstores import PGVectorStore
 
-from examples.deep_agent_runtime.ollama_client import get_ollama_client
+from .ollama_client import get_ollama_client
 from runtime_core.infra import get_logger
 from runtime_core.types import JsonValue, ensure_json_value
 

@@ -15,8 +15,8 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langchain_core.tools import BaseTool
 
-from examples.deep_agent_runtime.agent_tools import build_research_tools
-from examples.deep_agent_runtime.ollama_client import get_ollama_client
+from .agent_tools import build_research_tools
+from .ollama_client import get_ollama_client
 from runtime_core.infra import get_logger
 from runtime_core.utils.time_utils import now_iso
 from runtime_langchain.task_orchestrator import GraphInput
@@ -143,12 +143,10 @@ def make_system_prompt(agent_id: str) -> str:
         f"{policy_block}\n"
         "## ツールの方針\n"
         "- 複数回ツールを使うことができます。\n"
+        "- 明示がない場合は常に最新の情報を収集、参照すること\n"
         "- ファイルに保存した内容は、必要な部分だけ読んで要約・整理してユーザーに返す。\n"
-        "- 生成物は /artifacts、長期的に残すべき内容は /memories、作業途中の比較表や要約下書きは /tmp を優先して使う。\n"
-        "- /memories/ は用途別に以下へ保存する:\n"
-        "  - /memories/profile/: ユーザーの安定した属性や好み\n"
-        "  - /memories/topics/: よく話すテーマ、関心領域、継続中の話題\n"
-        "  - /memories/tasks/: 継続タスク、未完了事項\n"
+        "- 生成物は /artifacts、作業途中の比較表や要約下書きは /tmp を優先して使う。\n"
+        "- 長期記憶は LangMem で自動的に検索・保存される。/memories/ をファイルとして操作しない。\n"
         "- 複雑な調査や定期実行/繰り返し処理が必要な場合：\n"
         "   - ワーカーに依頼してください。必ずskillsを参照すること。\n"
         "   - 指定時間での実行はrequest_worker_at、定期実行/繰り返しは request_worker_periodicを利用すること\n"
@@ -185,9 +183,7 @@ async def build_main_deep_agent_graph(
 
     store_path = workspace_dir / "langgraph_store.sqlite"
     checkpoint_path = workspace_dir / "langgraph_checkpoints.sqlite"
-    memory_dir = workspace_dir / "memories"
     artifact_save_dir = workspace_dir / "artifacts"
-    memories_backend = FilesystemBackend(root_dir=str(memory_dir), virtual_mode=True)
     artifacts_backend = FilesystemBackend(
         root_dir=str(artifact_save_dir), virtual_mode=True
     )
@@ -201,7 +197,6 @@ async def build_main_deep_agent_graph(
 
     def make_backend(runtime: ToolRuntime) -> CompositeBackend:
         routes = {
-            "/memories/": memories_backend,
             "/artifacts/": artifacts_backend,
             "/tmp/": StateBackend(runtime),
         }
@@ -212,7 +207,6 @@ async def build_main_deep_agent_graph(
             routes=routes,
         )
 
-    memory_dir.mkdir(parents=True, exist_ok=True)
     artifact_save_dir.mkdir(parents=True, exist_ok=True)
     research_tools = build_research_tools(
         artifact_dir=artifact_save_dir,

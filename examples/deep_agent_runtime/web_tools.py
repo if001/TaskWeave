@@ -9,8 +9,8 @@ from socket import timeout as SocketTimeout
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from examples.deep_agent_runtime.common import normalize_text
-from examples.deep_agent_runtime.artifact_tools import artifact_save
+from .common import normalize_text
+from .artifact_tools import artifact_save
 from runtime_core.types import JsonValue, ensure_json_value
 
 _SIMPLE_CLIENT_BASE_URL_ENV = "SIMPLE_CLIENT_BASE_URL"

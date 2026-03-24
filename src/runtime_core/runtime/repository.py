@@ -80,10 +80,7 @@ class TaskRepository(Protocol):
         kinds: list[str] | None = None,
         parent_task_id: str | None = None,
         periodic_root_id: str | None = None,
-        dedupe_key: str | None = None,
     ) -> list[Task]: ...
-
-    def clear_dedupe_key(self, task_id: str) -> None: ...
 
 
 class _TaskRepositoryBase(TaskRepository):
@@ -165,7 +162,6 @@ class _TaskRepositoryBase(TaskRepository):
         kinds: list[str] | None = None,
         parent_task_id: str | None = None,
         periodic_root_id: str | None = None,
-        dedupe_key: str | None = None,
     ) -> list[Task]:
         status_filter = set(statuses) if statuses else None
         kind_filter = set(kinds) if kinds else None
@@ -178,19 +174,10 @@ class _TaskRepositoryBase(TaskRepository):
                 kind_filter=kind_filter,
                 parent_task_id=parent_task_id,
                 periodic_root_id=periodic_root_id,
-                dedupe_key=dedupe_key,
             ):
                 continue
             tasks.append(task)
         return tasks
-
-    def clear_dedupe_key(self, task_id: str) -> None:
-        task = self._require_task(task_id)
-        dedupe_key = task.dedupe_key
-        if dedupe_key is None:
-            return
-        self._unset_dedupe_key(task)
-        self._persist()
 
     def _set_dedupe_key(self, task: Task) -> None:
         if task.dedupe_key is None:
@@ -438,7 +425,6 @@ def _matches_task_filters(
     kind_filter: set[str] | None,
     parent_task_id: str | None,
     periodic_root_id: str | None,
-    dedupe_key: str | None,
 ) -> bool:
     if status_filter is not None and task.status not in status_filter:
         return False
@@ -447,7 +433,5 @@ def _matches_task_filters(
     if parent_task_id is not None and task.parent_task_id != parent_task_id:
         return False
     if periodic_root_id is not None and task.payload.get("periodic_root_id") != periodic_root_id:
-        return False
-    if dedupe_key is not None and task.dedupe_key != dedupe_key:
         return False
     return True

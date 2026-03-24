@@ -10,20 +10,24 @@ from tempfile import gettempdir
 from langchain_core.messages import AnyMessage
 from langgraph.graph.state import CompiledStateGraph, END, StateGraph
 
-from examples.deep_agent_runtime.agent_tools import build_research_tools
-from examples.deep_agent_runtime.ollama_client import get_ollama_client
+from .agent_tools import build_research_tools
+from .ollama_client import get_ollama_client
 from runtime_core.types import Message
 from runtime_langchain.task_orchestrator import GraphInput
 
 
 def build_worker_agent_graph(
-    use_real_agent: bool, backend: str, model_name: str, workspace_dir: Path
+    use_real_agent: bool,
+    backend: str,
+    model_name: str,
+    workspace_dir: Path,
 ) -> CompiledStateGraph[GraphInput, None, GraphInput, GraphInput]:
     if not use_real_agent:
         return _build_echo_worker_graph()
     if backend == "deepagent":
         return _build_deepagent_worker_graph(
-            model_name=model_name, workspace_dir=workspace_dir
+            model_name=model_name,
+            workspace_dir=workspace_dir,
         )
     return _build_langchain_worker_graph(model_name=model_name)
 
@@ -95,7 +99,8 @@ system_prompt = (
 
 
 def _build_deepagent_worker_graph(
-    model_name: str, workspace_dir: Path
+    model_name: str,
+    workspace_dir: Path,
 ) -> CompiledStateGraph[GraphInput, None, GraphInput, GraphInput]:
     from deepagents import create_deep_agent
     from deepagents.backends import CompositeBackend, FilesystemBackend, StateBackend
@@ -103,18 +108,14 @@ def _build_deepagent_worker_graph(
     from langgraph.store.memory import InMemoryStore
 
     memory_store = InMemoryStore()
-    memory_dir = workspace_dir / "memories"
     artifact_dir = workspace_dir / "artifacts"
-    memories_backend = FilesystemBackend(root_dir=str(memory_dir), virtual_mode=True)
     artifacts_backend = FilesystemBackend(root_dir=str(artifact_dir), virtual_mode=True)
-    memory_dir.mkdir(parents=True, exist_ok=True)
     artifact_dir.mkdir(parents=True, exist_ok=True)
 
     def make_backend(runtime: ToolRuntime) -> CompositeBackend:
         return CompositeBackend(
             default=StateBackend(runtime),
             routes={
-                "/memories/": memories_backend,
                 "/artifacts/": artifacts_backend,
             },
         )

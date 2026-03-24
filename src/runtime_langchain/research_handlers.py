@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from inspect import isawaitable
 from typing import Literal, TypeAlias
 
 from langchain_core.runnables import RunnableConfig
@@ -10,6 +11,7 @@ from runtime_core.tasks import WorkerLaunchRecorder, to_delayed_plans, to_period
 from runtime_core.types import TaskContext, TaskResult
 
 from .runnable_handler import BeforeInvoke, ConfigMapper, RunnableTaskHandler
+from .task_context_config import build_langgraph_configurable, resolve_speaker_type
 from .task_orchestrator import GraphInput, TaskOrchestrator
 
 ResearchKind: TypeAlias = Literal["main", "worker"]
@@ -68,14 +70,16 @@ class ResearchTaskHandler(RunnableTaskHandler):
         before_invoke: BeforeInvoke[GraphInput] | None = None,
         after_invoke: AfterInvokeHook | None = None,
     ) -> None:
-        normalized_after_invoke = _normalize_after_invoke(after_invoke)
         super().__init__(
             ainvoke=runnable.ainvoke,
             input_mapper=lambda ctx: _build_input(ctx, kind, prompt_builder),
             output_mapper=lambda ctx, raw: _build_result(ctx, kind, raw, orchestrator),
             config_mapper=config_mapper or _default_agent_config,
-            before_invoke=before_invoke or _default_before_invoke(kind, orchestrator.recorder),
-            after_invoke=normalized_after_invoke,
+            before_invoke=_compose_before_invoke(
+                _default_before_invoke(kind, orchestrator.recorder),
+                before_invoke,
+            ),
+            after_invoke=_compose_after_invoke(after_invoke),
         )
 
 
@@ -88,10 +92,7 @@ def _default_worker_prompt(query: str) -> str:
 
 
 def _default_agent_config(ctx: TaskContext) -> RunnableConfig | None:
-    thread_id = ctx.task.metadata.get("thread_id")
-    if isinstance(thread_id, str) and thread_id.strip():
-        return {"configurable": {"thread_id": thread_id}}
-    return None
+    return {"configurable": build_langgraph_configurable(ctx)}
 
 
 def _default_before_invoke(
@@ -103,16 +104,37 @@ def _default_before_invoke(
     return lambda ctx, inp: _prepare_main_input(ctx, inp, recorder)
 
 
+def _compose_before_invoke(
+    default_before_invoke: BeforeInvoke[GraphInput],
+    extra_before_invoke: BeforeInvoke[GraphInput] | None,
+) -> BeforeInvoke[GraphInput]:
+    if extra_before_invoke is None:
+        return default_before_invoke
+
+    async def composed(ctx: TaskContext, inp: GraphInput) -> GraphInput:
+        default_result = default_before_invoke(ctx, inp)
+        if isawaitable(default_result):
+            resolved_input = await default_result
+        else:
+            resolved_input = default_result
+        extra_result = extra_before_invoke(ctx, resolved_input)
+        if isawaitable(extra_result):
+            return await extra_result
+        return extra_result
+
+    return composed
+
+
+def _compose_after_invoke(
+    extra_after_invoke: AfterInvokeHook | None,
+) -> NormalizedAfterInvoke:
+    if extra_after_invoke is None:
+        return _normalize_graph_output
+    return lambda ctx, raw: extra_after_invoke(ctx, _coerce_graph_output(raw))
+
+
 def _passthrough_input(_: TaskContext, inp: GraphInput) -> GraphInput:
     return inp
-
-
-def _normalize_after_invoke(
-    after_invoke: AfterInvokeHook | None,
-) -> NormalizedAfterInvoke:
-    if after_invoke is None:
-        return _normalize_graph_output
-    return lambda ctx, raw: after_invoke(ctx, _coerce_after_invoke_input(raw))
 
 
 def _build_input(
@@ -123,7 +145,7 @@ def _build_input(
     payload_key = "topic" if kind == "main" else "query"
     prompt_text = str(ctx.task.payload[payload_key])
     prompt = _prompt_builder(kind, prompt_builder)(prompt_text)
-    return _user_message(f"[speaker_type={_speaker_type(ctx)}]\n{prompt}")
+    return _user_message(f"[speaker_type={resolve_speaker_type(ctx)}]\n{prompt}")
 
 
 def _prompt_builder(
@@ -135,10 +157,6 @@ def _prompt_builder(
     if kind == "main":
         return _default_main_prompt
     return _default_worker_prompt
-
-
-def _speaker_type(ctx: TaskContext) -> str:
-    return str(ctx.task.metadata.get("speaker_type", "unknown"))
 
 
 def _user_message(prompt: str) -> GraphInput:
@@ -180,10 +198,6 @@ def _build_result(
 
 
 def _normalize_graph_output(_: TaskContext, raw: object) -> object:
-    return _coerce_graph_output(raw)
-
-
-def _coerce_after_invoke_input(raw: object) -> GraphInput:
     return _coerce_graph_output(raw)
 
 

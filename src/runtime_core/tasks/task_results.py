@@ -23,8 +23,6 @@ from .task_plans import parse_float, parse_int
 class TaskResultConfig:
     worker_task_kind: str
     notification_task_kind: str
-    memory_reflection_task_kind: str | None = None
-    memory_reflection_delay_seconds: float = 0.0
     notification_kind_main: str = "main_result"
     notification_kind_worker: str = "worker_result"
 
@@ -38,14 +36,11 @@ def build_main_task_result(
     metadata = extract_notification_metadata(ctx.task.metadata)
     metadata["discord_request_task_id"] = ctx.task.id
     next_tasks = _build_main_tasks(ctx, raw, metadata, config)
-    memory_task = _build_memory_reflection_task(ctx, raw, config)
-    if memory_task is not None:
-        next_tasks.append(memory_task)
     next_tasks.append(
         _new_notification_task(
             task_id=f"notification:{ctx.task.id}:main",
             parent_task_id=ctx.task.id,
-            message=f"{render_output_message(raw['agent_output'])}",
+            message=render_output_message(raw["agent_output"]),
             metadata=metadata,
             notification_kind=config.notification_kind_main,
             notification_task_kind=config.notification_task_kind,
@@ -137,71 +132,6 @@ def _build_main_tasks(
         for index, plan in enumerate(raw["periodic_queries"], start=1)
     ]
     return [*immediate_tasks, *delayed_tasks, *periodic_tasks]
-
-
-def _build_memory_reflection_task(
-    ctx: TaskContext,
-    raw: MainAgentRawResult,
-    config: TaskResultConfig,
-) -> Task | None:
-    if config.memory_reflection_task_kind is None:
-        return None
-    user_input = str(ctx.task.payload.get("topic", "")).strip()
-    assistant_output = render_output_message(raw["agent_output"])
-    if not user_input or not assistant_output:
-        return None
-    metadata = _select_reflection_metadata(ctx.task.metadata)
-    enqueued_at = parse_float(ctx.task.metadata.get("enqueued_at_unix"), default=0.0)
-    run_after = enqueued_at + max(config.memory_reflection_delay_seconds, 0.0)
-    dedupe_key = _build_memory_reflection_dedupe_key(metadata)
-    if dedupe_key is None:
-        return None
-    metadata["replace_pending"] = True
-    return Task(
-        id=f"memory:{ctx.task.id}",
-        kind=config.memory_reflection_task_kind,
-        payload={
-            "user_input": user_input,
-            "assistant_output": assistant_output,
-        },
-        parent_task_id=ctx.task.id,
-        dedupe_key=dedupe_key,
-        run_after=run_after,
-        metadata=metadata,
-    )
-
-
-def _select_reflection_metadata(
-    metadata: dict[str, JsonValue],
-) -> dict[str, JsonValue]:
-    keys = [
-        "user_id",
-        "conversation_id",
-        "agent_id",
-        "speaker_id",
-        "speaker_type",
-        "root_trace_id",
-        "discord_requester_id",
-        "enqueued_at_unix",
-    ]
-    selected: dict[str, JsonValue] = {}
-    for key in keys:
-        value = metadata.get(key)
-        if isinstance(value, (str, int, float, bool)):
-            selected[key] = value
-    return selected
-
-
-def _build_memory_reflection_dedupe_key(
-    metadata: dict[str, JsonValue],
-) -> str | None:
-    for key in ("conversation_id", "user_id", "discord_requester_id"):
-        value = metadata.get(key)
-        if isinstance(value, str) and value.strip():
-            return f"memory_reflection:{key}:{value.strip()}"
-        if isinstance(value, int):
-            return f"memory_reflection:{key}:{value}"
-    return None
 
 
 def _build_worker_tasks(
