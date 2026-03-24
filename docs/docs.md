@@ -1,161 +1,173 @@
 # Agent Runtime PRD
 
-## 文書の位置づけ
+## 1. 文書の位置づけ
 
-この文書は、非同期 worker を持つエージェントシステム向けの Runtime ライブラリ TaskWeave の初期 PRD である。
-本ドキュメントは完成版ではなく、実装を進めながら更新していくたたき台とする。
+この文書は、TaskWeave の現行実装に基づく PRD である。
+TaskWeave は、main / worker を持つ agent システム向けに、task queue・scheduler・async execution・notification を提供する runtime ライブラリである。
 
----
+## 2. 背景
 
-# 1. PRD
+一般的な agent フレームワークは、ユーザー入力に対するその場の応答を得意とする。
+一方で、実アプリケーションでは以下が必要になる。
 
-## 1.1 背景
+- ユーザー入力を task として扱う
+- main が必要に応じて worker を起動する
+- worker を裏で非同期実行する
+- 定期実行や遅延実行を扱う
+- 完了時に notification を後送する
+- artifact を保存し再利用する
+- retry / timeout / cancel を deterministic に扱う
 
-一般的な agent フレームワークは、ユーザー入力に対してその場で応答を返すことを主目的としている。
-LangChain / LangGraph / Deep Agents は、agent 実装、tool 利用、subagent、durable execution、artifact 的な filesystem 活用などを強力に支援する。
+TaskWeave はこの runtime 部分をライブラリとして切り出す。
 
-一方で、今回作りたい仕組みはそれより一段上にある。
+## 3. プロダクトの目的
 
-ユーザーとの会話だけでなく、
+### 3.1 目的
 
-* user_request を task としてキューに積む
-* main agent が task を拾って処理する
-* 必要であれば tool を通じて worker を起動する
-* worker は main が待たずに裏で動く
-* worker は終了時に notification task を生成する
-* runtime が notification task を拾ってユーザーへ配送する
-* 定期実行・遅延実行・再実行を行う
-* 実行結果を artifact として保存し、後で利用する
+LangChain / LangGraph / Deep Agents を後段に差し込める、軽量で責務分離された task runtime を提供する。
 
-という **task runtime / scheduler / async execution** が中核になる。
+### 3.2 目指すもの
 
-このプロジェクトでは、agent 自体は LangChain / LangGraph / Deep Agents の仕組みをできるだけ流用し、プロダクト資産としては **runtime 側** を中心に整備する。
+- main / worker 構成を支える共通 runtime
+- queue / retry / timeout / cancel / scheduling を持つ execution 基盤
+- LangGraph / Deep Agents を自然に組み込める integration
+- runtime-core と examples の責務分離
+- CLI / Discord など複数 entrypoint で再利用できる構成
 
-## 1.2 プロダクトの目的
+### 3.3 目指さないもの
 
-### 目的
+- 独自 agent framework を一から作ること
+- runtime-core が agent の内部構造を理解すること
+- memory / artifact / vector store の完全標準化
+- UI 実装そのもの
 
-任意の agent 実装を後ろに差し込み可能な、軽量で責務分離された **task runtime ライブラリ** を提供する。
+## 4. 現行ユースケース
 
-### 目指すもの
+### 4.1 main の即時応答
 
-* main / worker という役割を持つ agent システムを支える共通 runtime
-* 非同期実行、定期実行、通知、再試行、状態遷移を扱える execution 基盤
-* LangChain / LangGraph / Deep Agents を自然に利用できる integration のしやすさ
-* agent や artifact の詳細を runtime-core に持ち込まない、疎結合な構成
-* 将来的に CLI / Web / Discord など複数チャネルで利用できる基盤
+1. ユーザー入力を `main_research` task として enqueue する
+2. runtime が main handler を実行する
+3. main graph が即時応答を返す
 
-### 目指さないもの
+### 4.2 background worker
 
-* 独自の agent framework を一から作ること
-* LLM orchestration をすべて runtime-core に埋め込むこと
-* workflow / graph / tool 実装の内部構造まで runtime が理解すること
-* artifact store や vector DB の完全な標準化を最初から行うこと
-* すべてのエージェント実装を同一インターフェースに完全統一すること
+1. main graph が worker request tool を呼ぶ
+2. `worker_research` task が生成される
+3. worker が background で実行される
+4. worker 完了後に notification task が生成される
 
-## 1.3 解決したい課題
+### 4.3 delayed / periodic 実行
 
-1. main agent が worker の完了待ちをしてしまうと、対話レイテンシが悪化する。
-2. 定期実行や遅延実行を agent の prompt / memory に任せると不安定になる。
-3. artifact や notification を agent 内部状態に混ぜると責務が曖昧になる。
-4. LangChain / LangGraph の利点を活かしつつ、プロダクト固有の runtime を持ちたい。
-5. 再試行・キャンセル・スケジュール・重複抑止などを deterministic に扱いたい。
+1. main graph が delayed / periodic worker request tool を呼ぶ
+2. runtime が `run_after` と periodic payload に従って task を管理する
+3. 条件を満たすと worker が実行される
 
-## 1.4 対象ユーザー
+### 4.4 artifact の再利用
 
-### 直接の利用者
+1. worker が raw artifact を filesystem に保存する
+2. meta を PGVectorStore に保存する
+3. main / worker が `artifact_search` で meta を検索し、必要な raw だけ読む
 
-* Python で agent システムを構築する開発者
-* LangChain / LangGraph / Deep Agents を使って main / worker 構成を作りたい開発者
-* 非同期タスク実行を伴う personal assistant / research agent / background worker を作りたい開発者
+### 4.5 長期記憶の利用
 
-### 間接的な利用者
+1. main 実行前に LangMem を検索する
+2. 検索結果を prompt に注入する
+3. main 実行後に ReflectionExecutor へ submit する
+4. profile / topics memory を非同期更新する
 
-* 上記 runtime を利用したアプリケーションのエンドユーザー
+## 5. In Scope
 
-## 1.5 コアユースケース
+- task queue
+- handler dispatch
+- retry / timeout / cancellation
+- delayed / periodic task
+- main / worker / notification フロー
+- LangGraph / LangChain / Deep Agents integration
+- worker request tools
+- artifact の保存と検索の接続点
+- notification sender の接続点
+- LangMem hook を examples から差し込める仕組み
 
-### ユースケース 1: 通常の user_request 処理
+## 6. Out of Scope
 
-1. ユーザー入力が user_request task として enqueue される
-2. runtime が main handler を選ぶ
-3. main agent が応答する
-4. 必要であれば worker_run task を tool を通じて生成する
-5. main は worker 完了を待たず即時返答する
+- 独自 LLM client
+- 独自 planner / workflow engine
+- distributed queue の本格運用
+- vector store の抽象標準化
+- memory の cross-backend abstraction
+- UI 実装
 
-### ユースケース 2: deep research の後送
+## 7. 現行アーキテクチャ
 
-1. main が「今すぐ答えられること」は回答する
-2. 追加調査が必要なら worker_run task を生成する
-3. worker が Web 取得、要約、artifact 保存を行う
-4. worker が notification task を作る
-5. runtime が notification を配送する
+### 7.1 runtime_core
 
-### ユースケース 3: 定期リサーチ
+- task モデル
+- runtime loop
+- repository
+- scheduler
+- registry
+- notifications
 
-1. scheduler が定期的に worker_run task を生成する
-2. worker がユーザーの過去履歴や interest artifact を参照する
-3. 新しい調査結果を artifact として保存する
-4. 条件を満たす場合のみ notification を生成する
+### 7.2 runtime_langchain
 
-### ユースケース 4: artifact の再利用
+- RunnableTaskHandler
+- research handler
+- worker request tools
+- runtime builder
+- TaskContext 由来の config helper
 
-1. 過去 worker が作成した artifact が存在する
-2. main または別 worker が artifact を読んで利用する
-3. 必要に応じて再要約や整理 artifact を生成する
+### 7.3 examples
 
-## 1.6 スコープ
+- main / worker graph
+- tools
+- LangMem memory hook
+- artifact tools
+- CLI / Discord bootstrap
 
-### In Scope
+## 8. 現行の重要仕様
 
-* task queue
-* scheduler / delayed task / periodic task
-* task state machine
-* handler dispatch
-* retry / timeout / cancellation の基礎
-* main / worker / notification の代表的 task フロー
-* LangChain / LangGraph / Deep Agents を包む integration 層
-* worker 起動要求を tools として提供する
-* artifact / notification を runtime-core 外の service として接続するための境界
-* notification payload の整形と `NotificationTaskHandler`
+### 8.1 worker の起動条件
 
-### Out of Scope
+worker は main が tool を呼んだときだけ起動する。
+`needs_worker=True` のような payload フラグでは起動しない。
 
-* 独自 LLM API client の実装
-* 独自 agent planner / tool executor の実装
-* artifact 保存形式の最終標準化
-* 分散キューの本格運用機能
-* UI 実装そのもの
-* vector store / embeddings / memory の細かい設計
+### 8.2 Runnable hook
 
-## 1.7 成功指標
+examples は `before_invoke` / `after_invoke` を追加できる。
+既定の main / worker フローは維持され、hook は上書きではなく合成される。
 
-初期段階では以下を成功条件とする。
+### 8.3 長期記憶
 
-* user_request → main → worker_run → notification の一連フローが動作する
-* runtime-core が LangChain 非依存である
-* create_agent / create_deep_agent / compiled graph を adapter 経由で実行できる
-* task state の遷移が追跡できる
-* retry / timeout / delayed execution が最低限動作する
-* artifact service を後付けできる
-* worker は main の tool 呼び出しによってのみ起動する
+- `/memories/` は filesystem として扱わない
+- LangMem が検索と保存を担う
+- `before_invoke` で検索、`after_invoke` で保存する
 
-将来的な指標:
+### 8.4 artifact
 
-* 実装側が独自 agent を少ないコードで登録できる
-* runtime 側の修正なしに複数の agent handler を追加できる
-* scheduler や notification channel を差し替えられる
+- raw は filesystem
+- meta は PGVectorStore
+- 検索は `artifact_search` 経由
 
-## 1.8 制約
+### 8.5 notification
 
-* Python ベース
-* LangChain / LangGraph / Deep Agents に寄せる
-* 過度な抽象化を避ける
-* runtime-core は agent や file を知らない
-* 実装は段階的に進める
+- main / worker の `TaskResult` から notification task を生成する
+- 配送先は `NotificationSender` 実装へ委譲する
 
-## 1.9 レイヤ境界（現行）
+## 9. 成功条件
 
-* runtime-core: Task/TaskResult/TaskHandler と runtime の実行管理、通知payloadの整形
-* runtime-langchain: Runnable の吸収、TaskOrchestrator による入出力の正規化と worker tool 提供
-* examples: agent の組み立てと runtime 設定のみ。worker 起動は tool 呼び出しで行う
+現行段階での成功条件は次の通り。
+
+- `main_research -> worker_research -> notification` フローが通る
+- runtime-core が LangChain 非依存である
+- LangGraph / Deep Agents を adapter 経由で実行できる
+- delayed / periodic / retry / timeout / cancel が機能する
+- artifact を後から再利用できる
+- LangMem の検索と保存を main 実行前後に差し込める
+
+## 10. 今後の拡張余地
+
+- NotificationSender のチャネル追加
+- RetryPolicy / TaskScheduler の差し替え
+- worker graph の種類追加
+- tracing / metrics の整理
+- artifact / memory 運用の改善

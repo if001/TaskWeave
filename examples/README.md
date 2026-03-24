@@ -23,7 +23,9 @@ python -m examples.deep_agent_runtime.main
 - `EXAMPLE_REAL_AGENT_BACKEND=langchain` (default) で worker に `create_agent` を使用
 - `EXAMPLE_REAL_AGENT_BACKEND=deepagent` で worker に `create_deep_agent` を使用
 - `SIMPLE_CLIENT_BASE_URL=<URL>` を設定すると、deepagent worker に web検索ツール (`web_list`, `web_page`) が有効化されます
-- deepagent worker は `CompositeBackend` を使い、`/memories/` を `StoreBackend`（long-term memory）、`/artifacts/` を `FilesystemBackend`（ローカル保存）へ route します
+- 長期記憶は `/memories/` のファイル操作ではなく、LangMem + ReflectionExecutor で管理します
+- main agent 実行前に LangMem 検索結果を prompt に注入し、実行後に ReflectionExecutor へ submit して保存します
+- deepagent worker は `CompositeBackend` を使い、`/artifacts/` を `FilesystemBackend`（ローカル保存）へ route します
 - Web検索アーティファクト保存先は `EXAMPLE_DEEPAGENT_ARTIFACT_DIR`（未指定時は一時ディレクトリ配下）です
 - `web_list` は `POST <base_url>/list` (`{"q": q, "k": k}`)、`web_page` は `POST <base_url>/page` (`{"url": url}`) を利用します
 - deepagent worker の検索/取得生レスポンスは `/artifacts/*` として保存され（実体は `EXAMPLE_DEEPAGENT_ARTIFACT_DIR` 配下）、会話コンテキストへは要約のみ返します（web_tools単体利用時は `EXAMPLE_WEB_SEARCH_DIR` を参照）

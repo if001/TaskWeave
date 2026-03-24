@@ -1,698 +1,244 @@
-# Design Doc v0.1
-## 文書の位置づけ
+# Design Doc
 
-この文書は、非同期 worker を持つエージェントシステム向けのRuntime ライブラリであるTaskWeaveの 設計書である。
-本ドキュメントは完成版ではなく、実装を進めながら更新していくたたき台とする。
+## 1. 文書の位置づけ
 
-# 2. 設計書
+この文書は、TaskWeave の現行実装に基づく設計書である。
+TaskWeave は main / worker / notification を task として扱い、非同期実行、遅延実行、定期実行、retry、timeout、cancel を支える runtime ライブラリを提供する。
 
-## 2.1 設計方針
+## 2. 設計方針
 
-### 方針 1: runtime-core を主役にする
+### 2.1 runtime-core を主役にする
 
-このシステムの独自価値は、agent の賢さそのものよりも、
+TaskWeave の独自価値は agent 自体ではなく、以下を deterministic に扱う runtime にある。
 
-* task 化
-* 非同期実行
-* 定期実行
-* retry / timeout
-* notification 後送
-* artifact の再利用前提
+- task 化
+- queue / lease / state 管理
+- delayed / periodic 実行
+- retry / timeout / cancellation
+- notification の後送
+- artifact の再利用前提
 
-を支える runtime にある。
+### 2.2 agent 実装は既存フレームワークを利用する
 
-### 方針 2: agent は既存フレームワークを流用する
+agent 本体は LangChain / LangGraph / Deep Agents を使う。
+runtime-core はこれらを知らず、integration 層が `TaskHandler` に包む。
 
-agent 実装は以下を想定する。
+### 2.3 runtime-core は TaskHandler だけを知る
 
-* LangChain `create_agent()`
-* Deep Agents `create_deep_agent()`
-* LangGraph compiled graph
+core は `Task` / `TaskContext` / `TaskResult` / `TaskHandler` を中心に構成する。
+LangGraph の `CompiledStateGraph` や LangChain Runnable は `runtime_langchain` で吸収する。
 
-runtime-core はこれらを直接理解しない。
-代わりに integration 層で包む。
+### 2.4 examples は agent の組み立てに集中する
 
-### 方針 3: runtime-core は TaskHandler だけを知る
+examples 側の責務は以下に絞る。
 
-`RunnableLike` を直接 core の契約にせず、core は `TaskHandler` という最小実行契約を扱う。
-LangChain / LangGraph の Runnable は integration 層で `TaskHandler` に変換する。
+- main / worker graph の作成
+- tools の作成
+- prompt / skills の定義
+- artifact 保存・検索の具体実装
+- runtime の composition root
 
-### 方針 4: artifact / notification は配送責務を core の外に置く
+## 3. レイヤ構成
 
-artifact や notification は task 実行結果として発生する副作用であり、core 自体は配送先や保存先のドメイン知識を持たない。
-ただし notification payload の整形や task 化のルールは runtime-core が担う。
-
-### 方針 5: main / worker の違いは task kind と handler で表現する
-
-main agent と worker agent は別クラスにしてもよいが、runtime 側から見ると違いは
-
-* どの task kind を処理するか
-* どの handler / adapter で包むか
-
-で表現すべきである。
-
-また、worker の起動は「main が tool を呼ぶ」ことでのみ発生する。
-payload のフラグで worker を即時起動する方式は採用しない。
-
----
-
-## 2.2 アーキテクチャ概要
-
-```text
-User / Trigger / Scheduler
-        |
-        v
-   Task Enqueue
-        |
-        v
-   Runtime Core
-   - Queue
-   - Scheduler
-   - State Machine
-   - Lease / Retry / Timeout
-   - Dispatch
-        |
-        +------------------+
-        |                  |
-        v                  v
- Main TaskHandler     Worker TaskHandler
-        |                  |
-        v                  v
- LangChain /          Deep Agent /
- LangGraph Agent      LangGraph Graph
-        |                  |
-        |                  +--> Artifact Service
-        |                  +--> Notification Task
-        v
- Immediate Response / Next Tasks
-```
-
----
-
-## 2.3 レイヤ分割
-
-### A. runtime-core
+### 3.1 runtime_core
 
 責務:
 
-* task enqueue / dequeue / lease
-* task state 管理
-* retry / timeout / cancellation
-* handler dispatch
-* handler result の commit
+- task enqueue / lease / commit
+- task status 管理
+- retry / timeout / cancel
+- delayed / periodic task の生成
+- handler dispatch
+- notification payload 整形
 
 知らないもの:
 
-* LLM
-* LangChain
-* LangGraph
-* Deep Agents
-* artifact の中身
-* notification の配送先詳細
+- LangChain
+- LangGraph
+- Deep Agents
+- tool の具体内容
+- artifact の保存形式
+- memory の保存形式
 
-### B. integration layer (runtime_langchain)
-
-責務:
-
-* LangChain / LangGraph / Deep Agents の runnable を包む
-* task payload を agent input へ変換する
-* config を注入する
-* agent raw output を TaskResult へ変換する
-* worker 起動要求を tools として提供する
-* main/worker の結果を TaskResult に統一する
-
-### C. application layer (examples)
+### 3.2 runtime_langchain
 
 責務:
 
-* main agent / worker agent の具体実装
-* artifact service 実装
-* notification service 実装
-* scheduler ポリシー
-* task payload schema
+- LangGraph / LangChain runnable を `RunnableTaskHandler` として実行する
+- `TaskContext` を graph input に変換する
+- graph output を `TaskResult` に変換する
+- worker 起動 tool を提供する
+- main / worker 共通の前処理・後処理を持つ
+- examples から渡された `before_invoke` / `after_invoke` を既定フローに合成する
 
----
+### 3.3 examples
 
-## 2.4 コアインターフェース
+責務:
 
-### Task
+- main / worker graph の具体実装
+- artifact tools の提供
+- notification sender の具体実装
+- LangMem hook の提供
+- CLI / Discord など run loop の差し替え
 
-```python
-from dataclasses import dataclass, field
-from typing import Any, Literal
+## 4. コアモデル
 
-TaskStatus = Literal[
-    "queued",
-    "leased",
-    "running",
-    "succeeded",
-    "failed",
-    "cancelled",
-]
+### 4.1 Task
 
-@dataclass
-class Task:
-    id: str
-    kind: str
-    payload: dict[str, Any]
-    status: TaskStatus = "queued"
-    run_after: float | None = None
-    parent_task_id: str | None = None
-    dedupe_key: str | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
-```
+`Task` は runtime が扱う最小単位で、`kind` と `payload` を持つ。
+主な属性:
 
-### TaskContext
+- `id`
+- `kind`
+- `payload`
+- `status`
+- `run_after`
+- `parent_task_id`
+- `dedupe_key`
+- `metadata`
 
-```python
-from dataclasses import dataclass
+### 4.2 TaskContext
 
-@dataclass
-class TaskContext:
-    task: Task
-    attempt: int
-    deadline_unix: float | None = None
-    cancellation_requested: bool = False
-```
+handler 実行時に task と実行文脈を渡す。
 
-### TaskResult
+- `task`
+- `attempt`
+- `deadline_unix`
+- `cancellation_requested`
 
-```python
-from dataclasses import dataclass, field
-from typing import Any, Literal
+### 4.3 TaskResult
 
-ResultStatus = Literal["succeeded", "failed", "retry"]
+handler の結果を表す。
 
-@dataclass
-class TaskResult:
-    status: ResultStatus
-    output: dict[str, Any] = field(default_factory=dict)
-    next_tasks: list[Task] = field(default_factory=list)
-    error: str | None = None
-```
+- `status`
+- `output`
+- `next_tasks`
+- `error`
 
-### TaskHandler
+### 4.4 TaskHandler
+
+runtime-core が知る唯一の実行契約は以下である。
 
 ```python
-from typing import Protocol
-
 class TaskHandler(Protocol):
     async def run(self, ctx: TaskContext) -> TaskResult: ...
 ```
 
-この 4 つを runtime-core の公開面の中心にする。
+## 5. 現行タスクフロー
 
-### Agent Input/Output (TypedDict)
+### 5.1 main_research
 
-runtime-core は main/worker の入出力を TypedDict として定義する。
-examples 側はこれに合わせて agent を構成する。
+1. ユーザー入力が `main_research` task として enqueue される
+2. runtime が main handler を実行する
+3. main graph は即時応答を返す
+4. main graph が worker request tool を呼んだ場合のみ `worker_research` task が生成される
+5. `TaskResult.next_tasks` により worker / notification が enqueue される
 
-```python
-class MainAgentInput(TypedDict):
-    messages: list[Message]
-    topic: str
-    delayed_jobs: list[DelayedWorkerPlan]
-    periodic_jobs: list[PeriodicWorkerPlan]
+### 5.2 worker_research
 
-class MainAgentOutput(TypedDict):
-    final_output: str
+1. worker task が ready になる
+2. runtime が worker handler を実行する
+3. worker は artifact を保存し、必要なら結果通知を `notification` task に変換する
+4. periodic worker の場合は次回 task を enqueue する
 
-class WorkerAgentInput(TypedDict):
-    messages: list[Message]
-    query: str
+### 5.3 notification
 
-class WorkerAgentOutput(TypedDict):
-    final_output: str
-```
+1. main / worker の `TaskResult` から notification task が生成される
+2. runtime は notification handler を呼ぶ
+3. 実際の送信先は `NotificationSender` 実装に委譲する
 
----
+## 6. Runnable 実行フロー
 
-## 2.5 Runtime の責務
+`RunnableTaskHandler.run` の流れは次の通りである。
 
-### Runtime が行うこと
+1. `input_mapper(ctx)`
+2. `before_invoke(ctx, input)`
+3. `runnable.ainvoke(input, config=...)`
+4. `after_invoke(ctx, raw_output)`
+5. `output_mapper(ctx, output)`
 
-* 次に実行可能な task を取得する
-* その task kind に対応する handler を選ぶ
-* handler を実行する
-* 成功・失敗・再試行を反映する
-* `next_tasks` を enqueue する
-* task 状態を保存する
+この構造により、runtime 側の既定フローを保ったまま examples 側から hook を追加できる。
 
-### Runtime が行わないこと
+## 7. Main / Worker の前後処理
 
-* task payload の意味理解
-* agent prompt の生成
-* artifact の内容解釈
-* notification の配送先詳細
-* LLM の直接呼び出し
+### 7.1 main の既定前処理
 
----
+main handler は invoke 前に recorder を drain し、task payload に含まれる delayed / periodic plan を worker request として取り込む。
 
-## 2.6 Task 種別の初期案
+### 7.2 examples からの追加 hook
 
-初期段階では次の task kind を持つ。
+examples は `register_main(..., before_invoke=..., after_invoke=...)` を通じて追加処理を注入できる。
+既定の main / worker 処理は維持され、受け取った hook は合成される。
 
-### `user_request`
+## 8. 長期記憶の扱い
 
-* ユーザーの入力を表す
-* main handler が処理する
-* 即時応答と追加 task 生成が主目的
+現行実装では `/memories/` を filesystem として exposed しない。
+長期記憶は LangMem + ReflectionExecutor で扱う。
 
-### `worker_run`
+### 8.1 before_invoke
 
-* 非同期 worker の実行を表す
-* worker handler が処理する
-* artifact 生成、要約、通知 task 生成が主目的
+main の `before_invoke` で LangMem を検索し、以下を prompt に注入する。
 
-### `notification`
+- 長期的なユーザープロファイル
+- 継続的な関心トピック
 
-* ユーザーへ後送する通知を表す
-* notification handler が処理する
-* CLI / Web / Discord などのチャネルへ配送する
+### 8.2 after_invoke
 
-将来的には以下を追加可能:
+main の `after_invoke` で user / assistant の turn を `ReflectionExecutor.submit(...)` に渡し、非同期で profile / topics memory を更新する。
 
-* `periodic_trigger`
-* `artifact_maintenance`
-* `memory_refresh`
-* `interest_research`
+### 8.3 保存先
 
----
+LangMem の保存先は `langgraph_store.sqlite` を使う。
+main agent の store と同系統の永続 store を共有し、memory の正本を filesystem に持たない。
 
-## 2.7 状態遷移
+## 9. Artifact の扱い
 
-### 基本状態
+artifact の raw は filesystem に保存する。
+meta は PGVectorStore に保存する。
 
-```text
-queued -> leased -> running -> succeeded
-                        |-> failed
-                        |-> cancelled
-                        |-> retry(= queued に戻す)
-```
+### 9.1 保存
 
-### 備考
+- `raw.json` を artifact directory に保存
+- title / summary / tags を Ollama で生成
+- meta を PGVectorStore に保存
 
-* `leased` は複数 worker / process を考慮した余地として残す
-* 初期実装では単一プロセスでもよい
-* retry は backoff を伴って `run_after` を未来に更新する
+### 9.2 検索
 
----
+- `artifact_search` は PGVectorStore を検索する
+- vector 検索と rerank を組み合わせる
+- 必要な raw だけ `raw_path` から読む
 
-## 2.8 Registry / Dispatch
+## 10. 主要な公開境界
 
-### HandlerRegistry
+### 10.1 runtime_core
 
-```python
-class HandlerRegistry:
-    def __init__(self):
-        self._handlers: dict[str, TaskHandler] = {}
+公開する中心:
 
-    def register(self, kind: str, handler: TaskHandler) -> None:
-        self._handlers[kind] = handler
+- task モデル
+- runtime
+- repository
+- scheduler
+- registry
+- notifications
 
-    def resolve(self, kind: str) -> TaskHandler:
-        return self._handlers[kind]
-```
+### 10.2 runtime_langchain
 
-runtime は task kind から handler を引いて実行する。
+公開する中心:
 
----
+- `RunnableTaskHandler`
+- `ResearchRuntimeBuilder`
+- worker request tools
 
-## 2.9 LangChain / LangGraph との接続
+内部 helper:
 
-### なぜ adapter 層を置くか
+- `research_handlers`
+- `task_context_config`
+- `task_orchestrator`
 
-runtime-core は LangChain / LangGraph 非依存でいたい。
-一方、アプリケーションでは `create_agent()` や `create_deep_agent()` をそのまま使いたい。
+## 11. 現行の設計上の判断
 
-そのため、integration 層として `RunnableTaskHandler` を置く。
-
-### RunnableTaskHandler のイメージ
-
-```python
-class RunnableTaskHandler:
-    def __init__(self, runnable, input_mapper, output_mapper, config_mapper=None):
-        self.runnable = runnable
-        self.input_mapper = input_mapper
-        self.output_mapper = output_mapper
-        self.config_mapper = config_mapper or (lambda ctx: None)
-
-    async def run(self, ctx: TaskContext) -> TaskResult:
-        inp = self.input_mapper(ctx)
-        config = self.config_mapper(ctx)
-        raw = await self.runnable.ainvoke(inp, config=config)
-        return self.output_mapper(ctx, raw)
-```
-
-### 役割
-
-* `input_mapper`: task payload → agent input
-* `config_mapper`: task context → LangGraph/LangChain config
-* `output_mapper`: agent output → TaskResult
-
-この adapter により、core からフレームワーク知識を切り離す。
-
-### TaskOrchestrator
-
-runtime_langchain は `TaskOrchestrator` を持ち、以下を担当する。
-
-* worker 起動用 tools の提供
-* main/worker raw output の正規化
-* `build_main_task_result` / `build_worker_task_result` の委譲
-* mock graph の用意（examples での簡易実行用）
-
----
-
-## 2.10 Main / Worker のおすすめ設計
-
-### Main
-
-役割:
-
-* user_request を処理する
-* すぐ返せることは返す
-* 後ろで処理すべきことは tool を使って worker_run task にする
-* 必要に応じて既存 artifact を参照する
-
-期待する出力:
-
-* 即時返答テキスト
-* `worker_run` task の配列
-
-### Worker
-
-役割:
-
-* 独立した目的に対してまとまった処理を行う
-* artifact を作る / 読む / 要約する
-* 終了時に notification task を生成する
-
-期待する出力:
-
-* artifact reference
-* 完了通知用 payload
-* 必要なら follow-up worker task
-
-### Subagent と Worker の違い
-
-* Deep Agents の subagent: main の処理中に呼ばれる in-band delegation
-* 今回の worker: runtime 管理下で動く out-of-band execution
-
-この違いは文書・命名でも明示する。
-
----
-
-## 2.11 Artifact 境界
-
-runtime-core は artifact を知らない。
-artifact は application layer 側の service として持つ。
-
-### ArtifactService の最小案
-
-```python
-from typing import Protocol
-
-class ArtifactService(Protocol):
-    def put_text(self, namespace: str, path: str, text: str, metadata: dict) -> str: ...
-    def read_text(self, artifact_id: str) -> str: ...
-    def list_by_task(self, task_id: str) -> list[str]: ...
-```
-
-### Deep Agents との関係
-
-Deep Agents の filesystem は worker 内の作業領域として活用できる。
-ただし runtime-core の公開契約に filesystem を持ち込まない。
-
-推奨:
-
-* worker 内部: Deep Agents backend の `/workspace` `/artifacts` `/memories`
-* application 外部参照: `artifact_id` ベース
-
----
-
-## 2.12 Notification 境界
-
-notification も runtime-core は詳細を知らない。
-単に `notification` task を処理する handler を登録する。
-
-runtime-core は notification payload の整形と `NotificationTaskHandler` を提供する。
-配送先は application layer 側で実装する。
-
-### NotificationService の最小案
-
-```python
-class NotificationService(Protocol):
-    async def send(self, payload: dict) -> None: ...
-```
-
-### 初期戦略
-
-まずは notification handler 内で service を呼ぶだけにし、配送チャネル差し替えを容易にする。
-
----
-
-## 2.13 Scheduler 境界
-
-scheduler は runtime-core の一部、または近傍コンポーネントとする。
-
-責務:
-
-* `run_after <= now` の task を実行可能にする
-* periodic rule から新しい task を生成する
-* retry backoff を扱う
-
-初期実装ではシンプルでよい。
-
-### Scheduler / Repository の責務境界（追記）
-
-責務の重複を避けるため、次のように境界を固定する。
-
-* Scheduler: 実行可否判定、retry 時刻計算、periodic rule からの task 生成
-* Repository: task 保存、lease、状態遷移の原子更新、transition history 保存
-* Runtime: scheduler/repository/handler の orchestration のみ
-
-この分割により、run-after 判定や periodic 生成ロジックを repository から切り離しやすくする。
-
-### 初期実装で十分なもの
-
-* 単一プロセス
-* in-memory queue または SQLite ベース
-* fixed / exponential backoff
-* cron は後回しでもよい
-
----
-
-## 2.14 Persistence の考え方
-
-### runtime-core の保存対象
-
-* task
-* task attempt count
-* state transition history
-* next run time
-* last error
-
-### 保存しないもの
-
-* agent の内部 state schema
-* artifact の中身
-* LLM provider 固有情報
-
-### LangGraph との関係
-
-LangGraph 側で checkpoint / persistence を使う場合でも、それは handler 内部の実行基盤として扱う。
-runtime の task persistence とは別物として分ける。
-
----
-
-## 2.14.1 Task identity / dedupe / idempotency（追記）
-
-初期実装段階で task の同一性を曖昧にしないため、以下を規約とする。
-
-* `Task.id` は enqueue 時点で一意であることを必須とする。
-* `dedupe_key` は「意味的に同一な依頼」を識別するために使い、衝突時の挙動（MVPでは raise / drop）は repository 実装の責務として明示する。
-* retry は同一 `Task.id` を再実行する。新規 task を発行しない。
-* `next_tasks` の id は `"{kind}:{parent_task_id}"` などの名前空間規約を推奨し、衝突を避ける。
-
-この規約により、再実行・重複投入・通知再送の挙動を deterministic に扱いやすくする。
-
-## 2.15 エラーハンドリング
-
-### 分類
-
-* 一時的失敗: retry
-* 恒久的失敗: failed
-* ユーザー中断 / 明示停止: cancelled
-
-### 方針
-
-* handler は例外を投げてもよい
-* runtime が分類し、必要なら retry に変換する
-* ただし domain 固有の retry 判定は application 層に寄せてもよい
-
----
-
-## 2.16 ディレクトリ構成
-
-```text
-project/
-  src/
-    runtime_core/
-      types/            # Task, TaskContext, TaskResult, Agent IO types
-      tasks/            # TaskResult builders, worker recorder, task plans
-      runtime/          # Runtime, Runner, Repository, Scheduler, Registry
-      infra/            # errors, logging
-      notifications.py  # notification payload shaping + handler
-    runtime_langchain/
-      runnable_handler.py
-      task_orchestrator.py
-      worker_tools.py
-  examples/
-    deep_agent_runtime/
-    main.py
-    discord_bot.py
-```
-
----
-
-## 2.17 初期実装ステップ
-
-### Step 1
-
-runtime-core の最小実装
-
-* Task
-* TaskContext
-* TaskResult
-* HandlerRegistry
-* Runtime.tick()
-* InMemoryTaskRepository
-
-### Step 2
-
-task 種別の追加
-
-* user_request
-* worker_run
-* notification
-
-### Step 3
-
-LangChain integration
-
-* RunnableTaskHandler
-* create_agent を包んで実行
-
-### Step 4
-
-Deep Agents integration
-
-* worker 用 deep agent を包む
-* artifact service を接続
-
-### Step 5
-
-scheduler / retry / timeout
-
-* run_after
-* backoff
-* cancellation
-
-### Step 6
-
-永続化
-
-* SQLite または Postgres を検討
-
----
-
-## 2.18 この設計の賛成意見
-
-* runtime をライブラリとして切り出しやすい
-* agent 側を既存フレームワークに寄せられる
-* task 契約と agent 実行契約を分離できる
-* main / worker の増加に耐えやすい
-* artifact / notification の責務が明確
-
-## 2.19 懸念点 / 反対意見
-
-### 懸念 1: 抽象化のしすぎ
-
-TaskHandler の上にさらに抽象を重ねると複雑化する。
-初期段階では `TaskHandler` と `RunnableTaskHandler` までで止めるべき。
-
-### 懸念 2: output mapping の肥大化
-
-agent の生出力を自由形式にすると mapper が汚くなる。
-Pydantic / TypedDict などで agent 出力を構造化する方向が望ましい。
-
-### 懸念 3: runtime-core が薄すぎる可能性
-
-薄くしすぎるとアプリ側に責務が漏れる。
-ただし今回はまず薄く始め、必要に応じて共通化する方針を取る。
-
----
-
-# 3. 実装時のおすすめ
-
-## 3.1 最初からやるべきこと
-
-* task model の固定
-* state transition の明確化
-* handler registry の明確化
-* runtime-core と integration layer の import 依存を分ける
-* main / worker / notification の 3 フローをまず通す
-
-## 3.2 後回しでよいこと
-
-* 汎用的な plugin システム
-* 分散キュー
-* 複雑な cron parser
-* artifact metadata の完全設計
-* 高度な observability
-
-## 3.3 agent 出力の構造化例
-
-```python
-from pydantic import BaseModel, Field
-
-class MainAgentOutput(BaseModel):
-    reply_text: str = Field(default="")
-    spawn_worker_tasks: list[dict] = Field(default_factory=list)
-
-class WorkerAgentOutput(BaseModel):
-    summary_text: str = Field(default="")
-    artifact_refs: list[str] = Field(default_factory=list)
-    notifications: list[dict] = Field(default_factory=list)
-```
-
-これを `output_mapper` に渡すと、runtime 側の処理が安定しやすい。
-
----
-
-# 4. 今後の更新候補
-
-* task payload schema の詳細化
-* repository の DB schema
-* scheduler の periodic rule 仕様
-* artifact 命名規則 / metadata 設計
-* cancellation の扱い
-* observability / logging / tracing
-* security boundary
-* multi-process / distributed 実行
-
----
-
-# 5. まとめ
-
-このプロジェクトは、agent 自体を作ることよりも、**agent を安全に・継続的に・非同期で動かす runtime を整備すること** を主目的とする。
-LangChain / LangGraph / Deep Agents はその上に載る実行エンジンとして扱い、runtime-core はそれらに依存しない task execution library として保つ。
-
-初期段階では、
-
-* runtime-core は `Task / TaskContext / TaskResult / TaskHandler` を中心に設計する
-* LangChain / LangGraph / Deep Agents は adapter で包む
-* main / worker / notification の 3 種 task フローを通す
-* artifact / notification は service 境界の外に置く
-
-という方針で進めるのがもっとも実装しやすく、今後の拡張にも耐えやすい。
+- worker は main の tool 呼び出しでのみ起動する
+- `needs_worker` のような payload フラグによる即時起動は行わない
+- main / worker の business flow は runtime 側が持つ
+- examples は graph / tools / prompt / hooks の差し替えに集中する
+- notification と artifact の配送責務は runtime-core の外に置く
