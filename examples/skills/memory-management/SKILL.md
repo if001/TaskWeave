@@ -115,7 +115,7 @@ LangMem とファイルシステムへ適切に保存・整理するための手
 保存された情報を探す場合は次の順序を推奨する。
 
 1. `artifact_search` でメタを検索する
-2. raw_path を辿り raw.json を読む
+2. raw_path を辿り artifact JSON を読む
 
 ---
 
