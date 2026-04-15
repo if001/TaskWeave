@@ -10,7 +10,9 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from .common import normalize_text
-from .artifact_tools import artifact_save
+from .artifact_payloads import ArticleArtifact, WebListArtifact, WebListItem, article_description_text, web_list_description_text
+from .artifact_tools import artifact_index, save_article_artifact, save_web_list_artifact
+from .content_description import describe_content
 from runtime_core.types import JsonValue, ensure_json_value
 
 _SIMPLE_CLIENT_BASE_URL_ENV = "SIMPLE_CLIENT_BASE_URL"
@@ -52,16 +54,14 @@ def web_list_and_store_artifact(
         return _error_result(error or "web_list request failed")
 
     artifact_root = _resolve_artifact_dir(artifact_dir)
-    raw_payload: dict[str, JsonValue] = {
-        "kind": "web_list",
-        "request": request_payload,
-        "response": response,
-    }
-    meta = artifact_save(
-        kind="web_list",
-        raw=raw_payload,
-        artifact_dir=artifact_root,
+    payload = _build_web_list_artifact(normalized_query, response)
+    saved = save_web_list_artifact(artifact=payload, artifact_dir=artifact_root)
+    description = describe_content(
+        content=web_list_description_text(payload),
+        fallback_title=normalized_query,
+        default_tags=["web_list"],
     )
+    meta = artifact_index(saved=saved, description=description)
     return SearchToolResult(
         status="ok",
         artifact_path=meta["raw_path"],
@@ -84,22 +84,70 @@ def web_page_and_store_artifact(
         return _error_result(error or "web_page request failed")
 
     artifact_root = _resolve_artifact_dir(artifact_dir)
-    raw_payload: dict[str, JsonValue] = {
-        "kind": "web_page",
-        "request": request_payload,
-        "response": response,
-    }
-    meta = artifact_save(
+    article = _build_web_page_artifact(normalized_url, response)
+    saved = save_article_artifact(
         kind="web_page",
-        raw=raw_payload,
+        artifact=article,
         artifact_dir=artifact_root,
     )
+    description = describe_content(
+        content=article_description_text(article),
+        fallback_title=article["source"]["title"],
+        default_tags=["web_page"],
+    )
+    meta = artifact_index(saved=saved, description=description)
     return SearchToolResult(
         status="ok",
         artifact_path=meta["raw_path"],
         summary=meta["summary"],
     )
 
+
+
+def _build_web_list_artifact(query: str, response: JsonValue) -> WebListArtifact:
+    if not isinstance(response, list):
+        raise RuntimeError("web_list response must be a list")
+    results: list[WebListItem] = []
+    for item in response:
+        if not isinstance(item, dict):
+            continue
+        title = _string_value(item.get("title"))
+        url = _string_value(item.get("url"))
+        snippet = _string_value(item.get("snippet"))
+        if not title or not url:
+            continue
+        results.append({"title": title, "url": url, "snippet": snippet})
+    if not results:
+        raise RuntimeError("web_list response does not include results")
+    return {"query": query, "results": results}
+
+
+def _build_web_page_artifact(url: str, response: JsonValue) -> ArticleArtifact:
+    if not isinstance(response, dict):
+        raise RuntimeError("web_page response must be an object")
+    docs = response.get("docs")
+    if not isinstance(docs, list) or not docs:
+        raise RuntimeError("web_page response does not include docs")
+    first = docs[0]
+    if not isinstance(first, dict):
+        raise RuntimeError("web_page response returned invalid doc format")
+    title = _string_value(first.get("title")) or "(untitled)"
+    content = _string_value(first.get("markdown")) or _string_value(first.get("text"))
+    if not content:
+        raise RuntimeError("web_page response does not include content")
+    return {
+        "source": {"url": url, "title": title},
+        "content": content,
+        "content_char_count": len(content),
+    }
+
+
+def _string_value(value: JsonValue) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    return ""
 
 def _error_result(summary: str) -> SearchToolResult:
     return SearchToolResult(status="error", artifact_path="", summary=summary)

@@ -13,21 +13,26 @@ from langchain_ollama import OllamaEmbeddings
 from langchain_postgres.v2.engine import PGEngine
 from langchain_postgres.v2.vectorstores import PGVectorStore
 
-from .ollama_client import get_ollama_client
+from .artifact_payloads import ArticleArtifact, ArticleArtifactKind, WebListArtifact
+from .content_description import ContentDescription
 from runtime_core.infra import get_logger
-from runtime_core.types import JsonValue, ensure_json_value
+from runtime_core.types import ensure_json_value
 
-_ARTIFACT_MODEL_ENV = "ARTIFACT_OLLAMA_MODEL"
 _ARTIFACT_EMBED_MODEL_ENV = "ARTIFACT_OLLAMA_EMBED_MODEL"
 _ARTIFACT_RERANK_MODEL_ENV = "ARTIFACT_OLLAMA_RERANK_MODEL"
 _ARTIFACT_PG_DSN_ENV = "ARTIFACT_PG_DSN"
 _ARTIFACT_PG_SCHEMA_ENV = "ARTIFACT_PG_SCHEMA"
 _ARTIFACT_PG_TABLE_ENV = "ARTIFACT_PG_TABLE"
-_ARTIFACT_MAX_INPUT_CHARS = 6000
 _ARTIFACT_RERANK_MAX_CANDIDATES = 20
 _ARTIFACT_VECTOR_MULTIPLIER = 5
 
 logger = get_logger(__name__)
+
+
+class SavedArtifact(TypedDict):
+    id: str
+    kind: str
+    raw_path: str
 
 
 class ArtifactMeta(TypedDict):
@@ -45,43 +50,51 @@ class _ArtifactCandidate:
     vector_score: float
 
 
-def artifact_save(
+def save_article_artifact(
     *,
-    kind: str,
-    raw: JsonValue,
+    kind: ArticleArtifactKind,
+    artifact: ArticleArtifact,
     artifact_dir: Path,
+) -> SavedArtifact:
+    return _write_artifact(kind=kind, payload=artifact, artifact_dir=artifact_dir)
+
+
+def save_web_list_artifact(
+    *,
+    artifact: WebListArtifact,
+    artifact_dir: Path,
+) -> SavedArtifact:
+    return _write_artifact(kind="web_list", payload=artifact, artifact_dir=artifact_dir)
+
+
+def artifact_index(
+    *,
+    saved: SavedArtifact,
+    description: ContentDescription,
 ) -> ArtifactMeta:
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-    artifact_id = uuid4().hex
-    target_dir = artifact_dir / artifact_id
-    target_dir.mkdir(parents=True, exist_ok=True)
-
-    raw_path = target_dir / "raw.json"
-    raw_path.write_text(
-        json.dumps(raw, ensure_ascii=False, indent=2),
-        encoding="utf-8",
+    meta = ArtifactMeta(
+        id=saved["id"],
+        kind=saved["kind"],
+        title=description["title"],
+        summary=description["summary"],
+        tags=description["tags"],
+        raw_path=saved["raw_path"],
     )
-
-    resolved_title = _generate_title(kind, raw)
-    resolved_summary = _generate_summary(kind, raw)
-    resolved_tags = _generate_tags(kind, raw)
-    meta: ArtifactMeta = {
-        "id": artifact_id,
-        "kind": kind,
-        "title": resolved_title,
-        "summary": resolved_summary,
-        "tags": resolved_tags,
-        "raw_path": str(raw_path),
-    }
     _store_meta_in_vectorstore(meta)
     return meta
 
 
-def artifact_search(
+def artifact_index_path(
     *,
-    query: str,
-    limit: int = 5,
-) -> list[ArtifactMeta]:
+    kind: str,
+    raw_path: Path,
+    description: ContentDescription,
+) -> ArtifactMeta:
+    saved = SavedArtifact(id=raw_path.stem, kind=kind, raw_path=str(raw_path))
+    return artifact_index(saved=saved, description=description)
+
+
+def artifact_search(*, query: str, limit: int = 5) -> list[ArtifactMeta]:
     if not query.strip():
         return []
 
@@ -96,101 +109,15 @@ def artifact_search(
     return [item.meta for item in reranked[: max(limit, 1)]]
 
 
-def _score_meta(meta: ArtifactMeta, tokens: list[str]) -> int:
-    haystack = " ".join([meta["title"], meta["summary"], " ".join(meta["tags"])])
-    haystack_lower = haystack.lower()
-    score = 0
-    for token in tokens:
-        if token and token in haystack_lower:
-            score += 1
-    return score
-
-
-def _normalize_tags(tags: list[str] | str | None) -> list[str]:
-    if tags is None:
-        return []
-    if isinstance(tags, str):
-        raw_tags = [item.strip() for item in tags.split(",")]
-    else:
-        raw_tags = [str(item).strip() for item in tags]
-    return [tag for tag in raw_tags if tag]
-
-
-def _summarize_payload(payload: JsonValue) -> str:
-    rendered = (
-        payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)
+def _write_artifact(*, kind: str, payload: ArticleArtifact | WebListArtifact, artifact_dir: Path) -> SavedArtifact:
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    artifact_id = uuid4().hex
+    raw_path = artifact_dir / f"{artifact_id}.json"
+    raw_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
     )
-    summary = " ".join(rendered.split())
-    return summary[:500]
-
-
-def _generate_title(kind: str, payload: JsonValue) -> str:
-    prompt = (
-        "Create a concise title (max 8 words) for the following artifact.\n"
-        f"Kind: {kind}\n"
-        f"Content:\n{_render_payload(payload)}\n"
-        "Return title only."
-    )
-    response = _call_ollama(prompt)
-    return response or _fallback_title(kind)
-
-
-def _generate_summary(kind: str, payload: JsonValue) -> str:
-    prompt = (
-        "Summarize the following artifact in 1-2 sentences (max 300 chars).\n"
-        f"Kind: {kind}\n"
-        f"Content:\n{_render_payload(payload)}\n"
-        "Return summary only."
-    )
-    response = _call_ollama(prompt)
-    return response or _summarize_payload(payload)
-
-
-def _generate_tags(kind: str, payload: JsonValue) -> list[str]:
-    prompt = (
-        "Generate 3-8 short tags for the following artifact.\n"
-        f"Kind: {kind}\n"
-        f"Content:\n{_render_payload(payload)}\n"
-        "Return comma-separated tags only."
-    )
-    response = _call_ollama(prompt)
-    if not response:
-        return []
-    return _normalize_tags(response)
-
-
-def _render_payload(payload: JsonValue) -> str:
-    rendered = (
-        payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)
-    )
-    trimmed = " ".join(rendered.split())
-    return trimmed[:_ARTIFACT_MAX_INPUT_CHARS]
-
-
-def _invoke_model(prompt: str, *, model_name: str) -> str:
-    try:
-        model = get_ollama_client(model_name=model_name)
-        message = model.invoke([{"role": "user", "content": prompt}])
-    except Exception:
-        return ""
-    content = getattr(message, "content", "")
-    if isinstance(content, str):
-        return content.strip()
-    return str(content).strip()
-
-
-def _call_ollama(prompt: str) -> str:
-    return _invoke_model(prompt, model_name=_artifact_model_name())
-
-
-@lru_cache(maxsize=1)
-def _artifact_model_name() -> str:
-    return os.getenv(_ARTIFACT_MODEL_ENV, "gpt-oss:20b")
-
-
-@lru_cache(maxsize=1)
-def _rerank_model_name() -> str:
-    return os.getenv(_ARTIFACT_RERANK_MODEL_ENV, "gpt-oss:20b")
+    return SavedArtifact(id=artifact_id, kind=kind, raw_path=str(raw_path))
 
 
 @lru_cache(maxsize=1)
@@ -201,7 +128,7 @@ def _get_embeddings() -> OllamaEmbeddings:
 
 
 @lru_cache(maxsize=1)
-def _get_vectorstore():
+def _get_vectorstore() -> PGVectorStore | None:
     dsn = os.getenv(_ARTIFACT_PG_DSN_ENV, "").strip()
     if not dsn:
         return None
@@ -248,7 +175,9 @@ def _render_meta_text(meta: ArtifactMeta) -> str:
 
 
 def _search_vectorstore(
-    vectorstore, query: str, limit: int
+    vectorstore: PGVectorStore,
+    query: str,
+    limit: int,
 ) -> list[_ArtifactCandidate]:
     k = max(limit, 1) * _ARTIFACT_VECTOR_MULTIPLIER
     try:
@@ -270,21 +199,31 @@ def _document_to_meta(doc: Document) -> ArtifactMeta | None:
     data = doc.metadata
     if not isinstance(data, dict):
         return None
-    tags = data.get("tags")
-    if not isinstance(tags, list):
-        tags = []
+    raw_tags = data.get("tags")
+    tags = [str(tag) for tag in raw_tags] if isinstance(raw_tags, list) else []
     return ArtifactMeta(
         id=str(data.get("id", "")),
         kind=str(data.get("kind", "")),
         title=str(data.get("title", "")),
         summary=str(data.get("summary", "")),
-        tags=[str(tag) for tag in tags if str(tag).strip()],
+        tags=[tag for tag in tags if tag.strip()],
         raw_path=str(data.get("raw_path", "")),
     )
 
 
+def _score_meta(meta: ArtifactMeta, tokens: list[str]) -> int:
+    haystack = " ".join([meta["title"], meta["summary"], " ".join(meta["tags"])])
+    haystack_lower = haystack.lower()
+    score = 0
+    for token in tokens:
+        if token and token in haystack_lower:
+            score += 1
+    return score
+
+
 def _rerank_candidates(
-    query: str, candidates: list[_ArtifactCandidate]
+    query: str,
+    candidates: list[_ArtifactCandidate],
 ) -> list[_ArtifactCandidate]:
     if not candidates:
         return []
@@ -300,7 +239,8 @@ def _rerank_candidates(
 
 
 def _rerank_with_keywords(
-    query: str, candidates: list[_ArtifactCandidate]
+    query: str,
+    candidates: list[_ArtifactCandidate],
 ) -> list[_ArtifactCandidate]:
     tokens = _tokenize(query)
     return sorted(
@@ -311,7 +251,8 @@ def _rerank_with_keywords(
 
 
 def _rerank_with_ollama(
-    query: str, candidates: list[_ArtifactCandidate]
+    query: str,
+    candidates: list[_ArtifactCandidate],
 ) -> dict[str, float] | None:
     prompt_items = [
         {
@@ -334,12 +275,13 @@ def _rerank_with_ollama(
     if not response:
         return None
     try:
-        parsed: object = json.loads(response)
+        parsed = json.loads(response)
     except json.JSONDecodeError:
         return None
     coerced = ensure_json_value(parsed)
     if coerced is None or not isinstance(coerced, list):
         return None
+
     scores: dict[str, float] = {}
     for item in coerced:
         if not isinstance(item, dict):
@@ -357,15 +299,28 @@ def _call_rerank_model(prompt: str) -> str:
     return _invoke_model(prompt, model_name=_rerank_model_name())
 
 
-def _fallback_title(kind: str) -> str:
-    safe_kind = kind.strip() or "artifact"
-    return f"{safe_kind} artifact"
+def _invoke_model(prompt: str, *, model_name: str) -> str:
+    try:
+        from .ollama_client import get_ollama_client
+        model = get_ollama_client(model_name=model_name)
+        message = model.invoke([{"role": "user", "content": prompt}])
+    except Exception:
+        return ""
+    content = getattr(message, "content", "")
+    if isinstance(content, str):
+        return content.strip()
+    return str(content).strip()
+
+
+@lru_cache(maxsize=1)
+def _rerank_model_name() -> str:
+    return os.getenv(_ARTIFACT_RERANK_MODEL_ENV, "gpt-oss:20b")
 
 
 def _tokenize(text: str) -> list[str]:
     lowered = text.lower()
-    tokens = []
-    current = []
+    tokens: list[str] = []
+    current: list[str] = []
     for ch in lowered:
         if ch.isalnum() or ch in {"-", "_"}:
             current.append(ch)

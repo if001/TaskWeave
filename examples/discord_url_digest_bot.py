@@ -5,7 +5,6 @@ import json
 import os
 import re
 import time
-import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from socket import timeout as SocketTimeout
@@ -15,7 +14,9 @@ from urllib.request import Request, urlopen
 import discord
 from dotenv import load_dotenv
 
-from examples.deep_agent_runtime.artifact_tools import ArtifactMeta, artifact_save
+from examples.deep_agent_runtime.artifact_payloads import ArticleArtifact, article_description_text
+from examples.deep_agent_runtime.artifact_tools import ArtifactMeta, artifact_index, save_article_artifact
+from examples.deep_agent_runtime.content_description import describe_content
 from examples.deep_agent_runtime.web_tools import resolve_simple_client_base_url
 from runtime_core.infra import get_logger
 
@@ -107,17 +108,11 @@ class UrlDigestService:
         message: discord.Message,
     ) -> ArtifactMeta:
         created_at = datetime.now(UTC).isoformat()
-        date_slug = datetime.now(UTC).strftime("%Y%m%d")
-        record_id = f"article_{date_slug}_{uuid.uuid4().hex[:10]}"
-        payload = {
-            "id": record_id,
+        payload: ArticleArtifact = {
             "created_at": created_at,
             "source": {
                 "url": url,
                 "title": page_title,
-                "discord_channel_id": message.channel.id,
-                "discord_message_id": message.id,
-                "discord_author_id": message.author.id,
             },
             "content": clipped_content,
             "content_char_count": len(content_text),
@@ -125,12 +120,21 @@ class UrlDigestService:
                 "next_article_selection",
                 "interest_direction_update",
             ],
+            "discord_channel_id": message.channel.id,
+            "discord_message_id": message.id,
+            "discord_author_id": message.author.id,
         }
-        return artifact_save(
+        saved = save_article_artifact(
             kind="url_digest",
-            raw=payload,
+            artifact=payload,
             artifact_dir=self._artifact_dir,
         )
+        description = describe_content(
+            content=article_description_text(payload),
+            fallback_title=page_title,
+            default_tags=["url_digest"],
+        )
+        return artifact_index(saved=saved, description=description)
 
 
 class DiscordUrlDigestBot(discord.Client):

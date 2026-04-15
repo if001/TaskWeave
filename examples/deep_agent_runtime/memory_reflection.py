@@ -14,6 +14,7 @@ from langchain_core.runnables import Runnable, RunnableConfig
 from langgraph.store.sqlite import SqliteStore
 from langmem.knowledge.extraction import MessagesState, SearchItem
 
+from .memory_store import LANGGRAPH_STORE_FILENAME, search_item_text
 from .ollama_client import get_ollama_client
 from runtime_core.infra import get_logger
 from runtime_core.types import Message, TaskContext
@@ -177,7 +178,7 @@ class LangMemMemoryHooks:
     def _open_store(self) -> SqliteStore:
         if self._store is not None:
             return self._store
-        store_path = self.workspace_dir / "langgraph_store.sqlite"
+        store_path = self.workspace_dir / LANGGRAPH_STORE_FILENAME
         context = SqliteStore.from_conn_string(str(store_path))
         store = context.__enter__()
         store.setup()
@@ -234,14 +235,7 @@ def _memory_lines(results: list[SearchItem]) -> list[str]:
 
 
 def _memory_text(item: SearchItem) -> str:
-    content = getattr(item.value, "content", None)
-    if isinstance(content, dict):
-        text = content.get("content")
-        if isinstance(text, str):
-            return text.strip()
-    if isinstance(content, str):
-        return content.strip()
-    return ""
+    return search_item_text(item)
 
 
 def _build_reflection_payload(
