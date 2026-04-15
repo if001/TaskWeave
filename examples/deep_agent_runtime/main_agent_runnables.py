@@ -187,6 +187,8 @@ async def build_main_deep_agent_graph(
     artifacts_backend = FilesystemBackend(
         root_dir=str(artifact_save_dir), virtual_mode=True
     )
+    tmp_save_dir = workspace_dir / "tmp"
+    tmp_backend = FilesystemBackend(root_dir=str(tmp_save_dir), virtual_mode=True)
     resolved_skills_dir = skills_dir or _resolve_skills_dir()
     skills_backend = (
         FilesystemBackend(root_dir=str(resolved_skills_dir), virtual_mode=True)
@@ -198,7 +200,8 @@ async def build_main_deep_agent_graph(
     def make_backend(runtime: ToolRuntime) -> CompositeBackend:
         routes = {
             "/artifacts/": artifacts_backend,
-            "/tmp/": StateBackend(runtime),
+            "/tmp/": tmp_backend,
+            "/work/": StateBackend(runtime),
         }
         if skills_backend is not None:
             routes["/skills/"] = skills_backend
