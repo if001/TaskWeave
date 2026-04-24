@@ -1,5 +1,5 @@
 ---
-name: use-worker
+name: user-worker
 description: メインエージェントが「自分で調査するか」「worker に依頼するか」を判断し、worker 依頼文を標準化する。
 ---
 # Skill: Research Triage / 依頼生成
