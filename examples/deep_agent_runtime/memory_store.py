@@ -58,6 +58,8 @@ class _MemoryItemLike(Protocol):
 
 def search_item_text(item: SearchItem | _MemoryItemLike) -> str:
     content = getattr(item.value, "content", None)
+    if content is None and isinstance(item.value, Mapping):
+        content = item.value.get("content")
     if isinstance(content, Mapping):
         text = content.get("content")
         if isinstance(text, str):

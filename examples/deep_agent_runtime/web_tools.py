@@ -10,15 +10,26 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from .common import normalize_text
-from .artifact_payloads import ArticleArtifact, WebListArtifact, WebListItem, article_description_text, web_list_description_text
-from .artifact_tools import artifact_index, save_article_artifact, save_web_list_artifact
+from .artifact_payloads import (
+    ArticleArtifact,
+    WebListArtifact,
+    WebListItem,
+    article_description_text,
+    web_list_description_text,
+)
+from .artifact_tools import (
+    artifact_index,
+    save_article_artifact,
+    save_web_list_artifact,
+)
 from .content_description import describe_content
-from runtime_core.types import JsonValue, ensure_json_value
+from runtime_core.types import JsonValue
 
 _SIMPLE_CLIENT_BASE_URL_ENV = "SIMPLE_CLIENT_BASE_URL"
 _WEB_SEARCH_DIR_ENV = "EXAMPLE_WEB_SEARCH_DIR"
 _WEB_SEARCH_TIMEOUT_SECONDS = 15.0
 _WEB_SEARCH_SUMMARY_MAX_CHARS = 500
+
 
 class SearchToolResult(TypedDict):
     status: str
@@ -103,23 +114,42 @@ def web_page_and_store_artifact(
     )
 
 
-
 def _build_web_list_artifact(query: str, response: JsonValue) -> WebListArtifact:
-    if not isinstance(response, list):
-        raise RuntimeError("web_list response must be a list")
+    if not isinstance(response, dict):
+        raise RuntimeError("web_list response must be an object")
+    response_query = _string_value(response.get("query")) or query
+    raw_k = response.get("k")
+    if not isinstance(raw_k, int):
+        raise RuntimeError("web_list response does not include k")
+    raw_results = response.get("results")
+    if not isinstance(raw_results, list):
+        raise RuntimeError("web_list response does not include results")
+
     results: list[WebListItem] = []
-    for item in response:
+    for item in raw_results:
         if not isinstance(item, dict):
             continue
+        rank = item.get("rank")
         title = _string_value(item.get("title"))
         url = _string_value(item.get("url"))
         snippet = _string_value(item.get("snippet"))
+        published_date = _string_value(item.get("published_date"))
+        if not isinstance(rank, int):
+            continue
         if not title or not url:
             continue
-        results.append({"title": title, "url": url, "snippet": snippet})
+        normalized: WebListItem = {
+            "rank": rank,
+            "title": title,
+            "url": url,
+            "snippet": snippet,
+        }
+        if published_date:
+            normalized["published_date"] = published_date
+        results.append(normalized)
     if not results:
         raise RuntimeError("web_list response does not include results")
-    return {"query": query, "results": results}
+    return {"query": response_query, "k": raw_k, "results": results}
 
 
 def _build_web_page_artifact(url: str, response: JsonValue) -> ArticleArtifact:
@@ -149,6 +179,7 @@ def _string_value(value: JsonValue) -> str:
         return str(value)
     return ""
 
+
 def _error_result(summary: str) -> SearchToolResult:
     return SearchToolResult(status="error", artifact_path="", summary=summary)
 
@@ -173,30 +204,23 @@ def _post_json(
         if isinstance(exc.reason, (TimeoutError, SocketTimeout)):
             return None, "web request timed out"
         return None, f"web request failed: {exc.reason}"
-    return _to_json_or_text(raw_text), None
+    try:
+        parsed: JsonValue = json.loads(raw_text)
+    except json.JSONDecodeError:
+        return None, "web request failed: response is not valid JSON"
+    return parsed, None
 
 
 def _format_http_error(exc: HTTPError) -> str:
     status = exc.code
     body = exc.read().decode("utf-8", errors="replace")
-    summary = _summarize_payload(_to_json_or_text(body)) if body else ""
+    summary = _summarize_text(body) if body else ""
     if 400 <= status < 500:
         details = f": {summary}" if summary else ""
         return f"web request failed (client error {status}){details}"
     if 500 <= status < 600:
         return f"web request failed (server error {status})"
     return f"web request failed (status {status})"
-
-
-def _to_json_or_text(raw_text: str) -> JsonValue:
-    try:
-        parsed: object = json.loads(raw_text)
-        coerced = ensure_json_value(parsed)
-        if coerced is not None:
-            return coerced
-    except json.JSONDecodeError:
-        return {"raw_text": raw_text}
-    return {"raw_text": raw_text}
 
 
 def _resolve_artifact_dir(artifact_dir: Path | None) -> Path:
@@ -210,11 +234,8 @@ def _resolve_artifact_dir(artifact_dir: Path | None) -> Path:
     return base_dir
 
 
-def _summarize_payload(payload: JsonValue) -> str:
-    rendered = (
-        payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)
-    )
-    return " ".join(rendered.split())[:_WEB_SEARCH_SUMMARY_MAX_CHARS]
+def _summarize_text(text: str) -> str:
+    return " ".join(text.split())[:_WEB_SEARCH_SUMMARY_MAX_CHARS]
 
 
 if __name__ == "__main__":
@@ -222,5 +243,5 @@ if __name__ == "__main__":
     request_payload: dict[str, JsonValue] = {"urls": url}
     base_url = "http://172.22.1.15:8000"
     print("base_url", base_url)
-    response = _post_json(url=f"{base_url}/page", payload=request_payload)
-    print(response)
+    result = _post_json(url=f"{base_url}/page", payload=request_payload)
+    print(result)

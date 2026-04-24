@@ -27,14 +27,20 @@ class ArticleArtifact(ArticleArtifactBase, total=False):
     discord_author_id: int
 
 
-class WebListItem(TypedDict):
+class WebListItemBase(TypedDict):
+    rank: int
     title: str
     url: str
+
+
+class WebListItem(WebListItemBase, total=False):
     snippet: str
+    published_date: str
 
 
 class WebListArtifact(TypedDict):
     query: str
+    k: int
     results: list[WebListItem]
 
 
@@ -81,8 +87,11 @@ def parse_web_list_artifact(raw: JsonValue) -> WebListArtifact | None:
     if not isinstance(raw, dict):
         return None
     query = raw.get("query")
+    raw_k = raw.get("k")
     results = raw.get("results")
     if not isinstance(query, str) or not query.strip():
+        return None
+    if not isinstance(raw_k, int):
         return None
     if not isinstance(results, list):
         return None
@@ -91,25 +100,31 @@ def parse_web_list_artifact(raw: JsonValue) -> WebListArtifact | None:
     for item in results:
         if not isinstance(item, dict):
             continue
+        rank = item.get("rank")
         title = item.get("title")
         url = item.get("url")
         snippet = item.get("snippet")
+        published_date = item.get("published_date")
+        if not isinstance(rank, int):
+            continue
         if not isinstance(title, str) or not title.strip():
             continue
         if not isinstance(url, str) or not url.strip():
             continue
         if not isinstance(snippet, str):
             snippet = ""
-        normalized_results.append(
-            {
-                "title": title.strip(),
-                "url": url.strip(),
-                "snippet": snippet.strip(),
-            }
-        )
+        normalized_item: WebListItem = {
+            "rank": rank,
+            "title": title.strip(),
+            "url": url.strip(),
+            "snippet": snippet.strip(),
+        }
+        if isinstance(published_date, str) and published_date.strip():
+            normalized_item["published_date"] = published_date.strip()
+        normalized_results.append(normalized_item)
     if not normalized_results:
         return None
-    return {"query": query.strip(), "results": normalized_results}
+    return {"query": query.strip(), "k": raw_k, "results": normalized_results}
 
 
 def article_description_text(article: ArticleArtifact) -> str:
@@ -127,10 +142,10 @@ def article_description_text(article: ArticleArtifact) -> str:
 def web_list_description_text(payload: WebListArtifact) -> str:
     sections: list[str] = [payload["query"]]
     for item in payload["results"][:8]:
+        published_date = item.get("published_date", "")
         sections.append(
             "\n".join(
-                part
-                for part in [item["title"], item["snippet"], item["url"]]
+                part for part in [item["title"], item.get("snippet", ""), published_date, item["url"]]
                 if part
             )
         )
