@@ -1,0 +1,33 @@
+services:
+  discord-bot-ao:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["uv", "run", "-m", "examples.discord_bot", "AO"]
+    env_file:
+      - .env
+    restart: unless-stopped
+    volumes:
+      - ./.state:/app/.state
+
+  discord-bot-aka:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["uv", "run", "-m", "examples.discord_bot", "AKA"]
+    env_file:
+      - .env
+    restart: unless-stopped
+    volumes:
+      - ./.state:/app/.state
+
+  discord-url-digest-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["uv", "run", "-m", "examples.discord_url_digest_bot"]
+    env_file:
+      - .env
+    restart: unless-stopped
+    volumes:
+      - ./.state:/app/.state
