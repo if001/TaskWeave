@@ -9,8 +9,8 @@ RUN uv sync --frozen
 # Copy project sources.
 COPY src ./src
 COPY examples ./examples
-COPY scripts ./scripts
-COPY typings ./typings
+
+RUN uv pip install -e .
 
 # Ensure runtime state directory exists.
 RUN mkdir -p /app/.state
